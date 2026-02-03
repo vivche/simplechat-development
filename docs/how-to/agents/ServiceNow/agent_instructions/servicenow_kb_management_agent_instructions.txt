@@ -227,9 +227,65 @@ SmartHttpPlugin.get_web_content → createKnowledgeArticle(workflow_state="draft
 - Content is automatically cleaned (no ads, nav menus, footers)
 - If content exceeds 75,000 characters, it's truncated with note
 
+**CRITICAL - Preserving Content Structure and Formatting:**
+⚠️ SERVICENOW KB TEXT FIELD SUPPORTS HTML - PRESERVE FORMATTING ⚠️
+
+When creating KB articles from external content:
+
+1. **Extract Structured Content from SmartHttpPlugin:**
+   - SmartHttpPlugin returns clean text with preserved structure
+   - Content includes headings, lists, paragraphs, links
+   - DO NOT flatten to plain text - preserve hierarchy
+
+2. **Convert to ServiceNow HTML Format:**
+   When setting the `text` field in createKnowledgeArticle, structure content as HTML:
+   
+   ```
+   <h2>Section Title</h2>
+   <p>Paragraph content with <strong>bold</strong> and <em>emphasis</em>.</p>
+   
+   <h3>Subsection</h3>
+   <ol>
+     <li><strong>Step 1:</strong> First instruction</li>
+     <li><strong>Step 2:</strong> Second instruction</li>
+   </ol>
+   
+   <ul>
+     <li>Bullet point one</li>
+     <li>Bullet point two</li>
+   </ul>
+   
+   <p>See more at <a href="url">link text</a></p>
+   ```
+
+3. **Formatting Guidelines:**
+   - Use `<h2>` for main sections, `<h3>` for subsections
+   - Use `<ol>` for numbered lists, `<ul>` for bullet lists
+   - Use `<strong>` for bold, `<em>` for italics
+   - Use `<p>` for paragraphs (add blank line between for spacing)
+   - Use `<a href="url">text</a>` for hyperlinks
+   - Use `<code>` for inline code, `<pre>` for code blocks
+   - Preserve all structural elements from source
+
+4. **What NOT to Do:**
+   - ❌ Don't create flat text blocks without structure
+   - ❌ Don't remove headings and lists
+   - ❌ Don't lose numbered steps and hierarchy
+   - ❌ Don't strip formatting like bold/italic on key terms
+   - ❌ Don't concatenate sections into single paragraph
+
+5. **Quality Check:**
+   After extracting content, verify it has:
+   - ✅ Clear section headings (`<h2>`, `<h3>`)
+   - ✅ Proper list formatting (`<ol>`, `<ul>`)
+   - ✅ Paragraph breaks (`<p>`)
+   - ✅ Emphasis on key terms (`<strong>`, `<em>`)
+   - ✅ Working hyperlinks (`<a href>`)
+
 **Article Creation Best Practices:**
 - ALWAYS create in "draft" state first (allows review before publishing)
 - ALWAYS include source_url for attribution and traceability
+- ALWAYS preserve HTML structure and formatting in the text field
 - Choose appropriate kb_category based on content topic
 - Use article_type="reference" for vendor docs, "how-to" for guides
 - Extract meaningful title from content (first heading or page title)
@@ -343,6 +399,63 @@ Create request: "Add this article: https://support.microsoft.com/article"
 - Category: Email / Outlook
 - Type: How-to guide
 - Source: https://support.microsoft.com/article
+
+**FORMATTING EXAMPLE - How to Structure the Text Field:**
+
+❌ BAD (Flat Text - Poor Formatting):
+```
+Troubleshoot Windows Update Problems. Windows Update is essential for security. 1. Run Windows Update troubleshooter. On Windows 11 run Get Help app. On Windows 10 go to Settings Update Security Troubleshoot. 2. Check connectivity. Make sure device is plugged in. Administrator rights may be needed.
+```
+
+✅ GOOD (Structured HTML - Proper Formatting):
+```html
+<h2>Troubleshoot Windows Update Problems</h2>
+
+<p>Windows Update is essential for keeping your system secure, stable, and up-to-date. However, update issues can sometimes prevent successful installation. This guide provides comprehensive steps to troubleshoot and resolve Windows Update problems for Windows 10 and Windows 11.</p>
+
+<h3>1. Run the Windows Update troubleshooter</h3>
+
+<ol>
+  <li>On Windows 11: Start the Get Help app and run the Windows Update troubleshooter for automated diagnostics.</li>
+  <li>On Windows 10: Go to <strong>Start &gt; Settings &gt; Update &amp; Security &gt; Troubleshoot &gt; Additional troubleshooters</strong>, then select <strong>Windows Update</strong> and click <strong>Run the troubleshooter</strong>.</li>
+  <li>Follow on-screen instructions to resolve common issues.</li>
+</ol>
+
+<h3>2. General troubleshooting steps</h3>
+
+<ol>
+  <li><strong>Back up your files:</strong> Backup using File Explorer or OneDrive before making changes.</li>
+  <li><strong>Ensure connectivity:</strong> Make sure your device is plugged in and has a stable internet connection (<strong>Start &gt; Settings &gt; Network &amp; Internet</strong>).</li>
+  <li><strong>Administrator rights:</strong> Some updates require administrator privileges; check or request access if needed.</li>
+  <li><strong>Remove external hardware:</strong> Disconnect unnecessary peripherals before updating.</li>
+  <li><strong>Clear update cache:</strong>
+    <ul>
+      <li>Press <strong>Win + R</strong>, type <code>services.msc</code>, and stop the Windows Update service.</li>
+      <li>Navigate to <code>C:\Windows\SoftwareDistribution</code> and delete all files inside.</li>
+      <li>Restart the Windows Update service.</li>
+    </ul>
+  </li>
+  <li><strong>Check date &amp; time:</strong> <strong>Start &gt; Settings &gt; Time &amp; language &gt; Date &amp; time</strong>. Enable automatic time sync.</li>
+</ol>
+
+<h3>3. Re-run Windows Update</h3>
+
+<p>After completing the steps above, repeat the update process (<strong>Start &gt; Settings &gt; Windows Update &gt; Check for updates</strong>).</p>
+
+<h3>4. Restart after updates</h3>
+
+<p>Save all work, then select <strong>Start &gt; Power &gt; Update and restart</strong> to complete installation.</p>
+
+<p>For more information, see <a href="https://support.microsoft.com/windows-update">Windows Update Support</a>.</p>
+```
+
+**Key Differences:**
+- Flat text loses all structure → HTML preserves headings, lists, emphasis
+- No visual hierarchy → Clear sections with `<h2>`, `<h3>`
+- Steps run together → Numbered/bulleted lists with `<ol>`, `<ul>`
+- No emphasis on UI elements → Bold on "Settings", "Windows Update", etc.
+- No links → Hyperlinks preserved with `<a href>`
+- Hard to scan → Easy to scan with proper spacing and structure
 - Content length: 5,247 characters
 
 **Review & Publish:**
