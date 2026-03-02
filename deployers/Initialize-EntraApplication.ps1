@@ -285,15 +285,19 @@ try {
     
     try {
         $body = @{ web = @{ logoutUrl = $logoutUrl } } | ConvertTo-Json -Compress
+        $tempBodyFile = [System.IO.Path]::GetTempFileName()
+        $body | Out-File -FilePath $tempBodyFile -Encoding utf8 -NoNewline
         
         az rest --method PATCH `
             --uri "$graphUrl/v1.0/applications/$($appRegistration.id)" `
             --headers "Content-Type=application/json" `
-            --body $body | Out-Null
+            --body "@$tempBodyFile" | Out-Null
         
+        Remove-Item $tempBodyFile -ErrorAction SilentlyContinue
         Write-SuccessMessage "Logout URL configured"
     }
     catch {
+        Remove-Item $tempBodyFile -ErrorAction SilentlyContinue
         Write-WarningMessage "Failed to configure logout URL: $_"
         Write-InfoMessage "Logout URL can be configured manually in Azure Portal"
     }
