@@ -1,0 +1,27 @@
+# Ensure shell scripts always use LF line endings regardless of OS
+# Without this, git on Windows will convert .sh files to CRLF, breaking bash execution
+*.sh text eol=lf
+
+# YAML files - LF
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Python files - LF
+*.py text eol=lf
+
+# Bicep files - LF
+*.bicep text eol=lf
+
+# Markdown - auto (allow platform default)
+*.md text
+
+# Binary files - no line ending conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
