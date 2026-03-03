@@ -24,12 +24,21 @@ hooks:
         Write-Host "========================================"
         Write-Host "POST-PROVISION: Starting configuration"
         Write-Host "========================================"
+
+        function Get-AzdVar($name) { (azd env get-values | Select-String "$name=`"([^`"]+)`"" | ForEach-Object { $_.Matches.Groups[1].Value }) }
         
-        if ("${var_configureApplication}" -eq "true") {
+        $configureApplication = if ($env:var_configureApplication) { $env:var_configureApplication } else { Get-AzdVar 'var_configureApplication' }
+        if (-not $configureApplication) { $configureApplication = 'false' }
+
+        if ("$configureApplication" -eq "true") {
             Write-Host ""
             Write-Host "[1/4] Granting permissions to CosmosDB..."
-            bash ./bicep/cosmosDb-postDeployPerms.sh
-            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to grant CosmosDB permissions"; exit 1 }
+            # Use dedicated PowerShell script for Windows (parity with Linux .sh approach)
+            $rgName = if ($env:var_rgName) { $env:var_rgName } else { Get-AzdVar 'var_rgName' }
+            $cosmosUri = if ($env:var_cosmosDb_uri) { $env:var_cosmosDb_uri } else { Get-AzdVar 'var_cosmosDb_uri' }
+            if (-not $rgName -or -not $cosmosUri) { Write-Error "ERROR: Missing var_rgName or var_cosmosDb_uri for CosmosDB permissions"; exit 1 }
+            pwsh -NoProfile -ExecutionPolicy Bypass -File ./bicep/cosmosDb-postDeployPerms.ps1 -ResourceGroupName $rgName -CosmosDbUri $cosmosUri
+            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to grant CosmosDB permissions via PowerShell script"; exit 1 }
             Write-Host "OK CosmosDB permissions granted successfully"
             
             Write-Host ""
@@ -47,9 +56,11 @@ hooks:
             
             Write-Host ""
             Write-Host "[4/4] Restarting web service to apply settings..."
-            az webapp restart --name ${var_webService} --resource-group ${var_rgName}
-            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to restart web service"; exit 1 }
-            Write-Host "OK Web service restarted successfully"
+            $webService = if ($env:var_webService) { $env:var_webService } else { Get-AzdVar 'var_webService' }
+            $rgNameForRestart = if ($env:var_rgName) { $env:var_rgName } else { Get-AzdVar 'var_rgName' }
+            if (-not $webService -or -not $rgNameForRestart) { Write-Error "ERROR: Missing var_webService or var_rgName for web app restart"; exit 1 }
+            az webapp restart --name $webService --resource-group $rgNameForRestart 2>&1
+            Write-Host "OK Web service restarted (exit code: $LASTEXITCODE)"
             
             Write-Host ""
             Write-Host "========================================"
@@ -150,59 +161,104 @@ hooks:
 
   predeploy:
   # this is run after infrastructure and postprovisioning but before service deployment
-  # primary use is to build and push container images
+    # By default this builds and pushes the image. To use a prebuilt image instead,
+    # set var_usePrebuiltImage=true (optionally var_prebuiltImageName, default var_imageName).
     windows:
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
         
-        Write-Host "========================================"
-        Write-Host "PRE-DEPLOY: Building and pushing image"
-        Write-Host "========================================"
+        # Resolve env vars - read from $env: first, fall back to azd env get-values
+        function Get-AzdVar($name) { (azd env get-values | Select-String "$name=`"([^`"]+)`"" | ForEach-Object { $_.Matches.Groups[1].Value }) }
+        $containerRegistry = if ($env:var_containerRegistry) { $env:var_containerRegistry } else { Get-AzdVar 'var_containerRegistry' }
+                $imageName         = if ($env:var_imageName)         { $env:var_imageName }         else { Get-AzdVar 'var_imageName' }
+                if (-not $imageName) { $imageName = 'simplechat' }
+                $prebuiltImageName = if ($env:var_prebuiltImageName) { $env:var_prebuiltImageName } else { Get-AzdVar 'var_prebuiltImageName' }
+                if (-not $prebuiltImageName) { $prebuiltImageName = $imageName }
+                $usePrebuiltImage  = if ($env:var_usePrebuiltImage)  { $env:var_usePrebuiltImage }  else { Get-AzdVar 'var_usePrebuiltImage' }
+                if (-not $usePrebuiltImage) { $usePrebuiltImage = 'false' }
+        $webService        = if ($env:var_webService)        { $env:var_webService }        else { Get-AzdVar 'var_webService' }
+        $rgName            = if ($env:var_rgName)            { $env:var_rgName }            else { Get-AzdVar 'var_rgName' }
+        $acrName           = if ($env:var_acrName)           { $env:var_acrName }           else { Get-AzdVar 'var_acrName' }
         
-        Set-Location ..
-        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        Write-Host ""
-        Write-Host "Deployment timestamp: $timestamp"
-        Write-Host "Image: ${var_containerRegistry}/${var_imageName}:$timestamp"
-        
-        Write-Host ""
-        Write-Host "[1/6] Stopping web service..."
-        az webapp stop --name ${var_webService} --resource-group ${var_rgName}
-        if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to stop web service"; exit 1 }
-        Write-Host "OK Web service stopped"
-        
-        Write-Host ""
-        Write-Host "[2/6] Building Docker image..."
-        docker build -f application/single_app/Dockerfile -t "${var_containerRegistry}/${var_imageName}:$timestamp" .
-        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: Docker build failed"; exit 1 }
-        Write-Host "OK Docker image built successfully"
-        
-        Write-Host ""
-        Write-Host "[3/6] Tagging image as latest..."
-        docker tag "${var_containerRegistry}/${var_imageName}:$timestamp" "${var_containerRegistry}/${var_imageName}:latest"
-        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: Docker tag failed"; exit 1 }
-        Write-Host "OK Image tagged successfully"
-        
-        Write-Host ""
-        Write-Host "[4/6] Logging in to ACR (${var_acrName})..."
-        az acr login --name ${var_acrName}
-        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: ACR login failed"; exit 1 }
-        Write-Host "OK ACR login successful"
-        
-        Write-Host ""
-        Write-Host "[5/6] Pushing images to ACR..."
-        docker push "${var_containerRegistry}/${var_imageName}:latest"
-        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: Docker push (latest) failed"; exit 1 }
-        docker push "${var_containerRegistry}/${var_imageName}:$timestamp"
-        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: Docker push (timestamp) failed"; exit 1 }
-        Write-Host "OK Images pushed to ACR"
-        
-        Write-Host ""
-        Write-Host "[6/6] Restarting web service..."
-        az webapp start --name ${var_webService} --resource-group ${var_rgName}
-        if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to restart web service"; exit 1 }
-        Write-Host "OK Web service restarted successfully"
+                Write-Host "Resolved: registry=$containerRegistry image=$imageName prebuiltImage=$prebuiltImageName app=$webService rg=$rgName usePrebuilt=$usePrebuiltImage"
+
+                if ($usePrebuiltImage -eq 'true') {
+                        Write-Host "========================================"
+                        Write-Host "PRE-DEPLOY: Using prebuilt image"
+                        Write-Host "========================================"
+                        Write-Host "INFO: Docker build/push skipped - using prebuilt latest tag"
+                        Write-Host ""
+
+                        Write-Host "[1/3] Logging in to ACR ($acrName)..."
+                        az acr login --name $acrName
+                        if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: ACR login failed"; exit 1 }
+                        Write-Host "OK ACR login successful"
+
+                        Write-Host ""
+                        Write-Host "[2/3] Pointing App Service at latest image..."
+                        az webapp config container set `
+                                --name $webService `
+                                --resource-group $rgName `
+                                --container-image-name "${containerRegistry}/${prebuiltImageName}:latest" `
+                                --container-registry-url "https://${containerRegistry}"
+                        if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to configure container image"; exit 1 }
+                        Write-Host "OK App Service container configured"
+
+                        Write-Host ""
+                        Write-Host "[3/3] Restarting web service..."
+                        az webapp restart --name $webService --resource-group $rgName
+                        if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to restart web service"; exit 1 }
+                        Write-Host "OK Web service restarted"
+                } else {
+                        Write-Host "========================================"
+                        Write-Host "PRE-DEPLOY: Building and pushing image"
+                        Write-Host "========================================"
+
+                        Set-Location ..
+                        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+                        Write-Host ""
+                        Write-Host "Deployment timestamp: $timestamp"
+                        Write-Host "Image: ${containerRegistry}/${imageName}:${timestamp}"
+
+                        Write-Host ""
+                        Write-Host "[1/6] Stopping web service..."
+                        az webapp stop --name $webService --resource-group $rgName
+                        if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to stop web service"; exit 1 }
+                        Write-Host "OK Web service stopped"
+
+                        Write-Host ""
+                        Write-Host "[2/6] Building Docker image..."
+                        docker build -f application/single_app/Dockerfile -t "${containerRegistry}/${imageName}:${timestamp}" .
+                        if ($LASTEXITCODE -ne 0) { az webapp start --name $webService --resource-group $rgName; Write-Error "ERROR: Docker build failed"; exit 1 }
+                        Write-Host "OK Docker image built successfully"
+
+                        Write-Host ""
+                        Write-Host "[3/6] Tagging image as latest..."
+                        docker tag "${containerRegistry}/${imageName}:${timestamp}" "${containerRegistry}/${imageName}:latest"
+                        if ($LASTEXITCODE -ne 0) { az webapp start --name $webService --resource-group $rgName; Write-Error "ERROR: Docker tag failed"; exit 1 }
+                        Write-Host "OK Image tagged successfully"
+
+                        Write-Host ""
+                        Write-Host "[4/6] Logging in to ACR ($acrName)..."
+                        az acr login --name $acrName
+                        if ($LASTEXITCODE -ne 0) { az webapp start --name $webService --resource-group $rgName; Write-Error "ERROR: ACR login failed"; exit 1 }
+                        Write-Host "OK ACR login successful"
+
+                        Write-Host ""
+                        Write-Host "[5/6] Pushing images to ACR..."
+                        docker push "${containerRegistry}/${imageName}:latest"
+                        if ($LASTEXITCODE -ne 0) { az webapp start --name $webService --resource-group $rgName; Write-Error "ERROR: Docker push (latest) failed"; exit 1 }
+                        docker push "${containerRegistry}/${imageName}:${timestamp}"
+                        if ($LASTEXITCODE -ne 0) { az webapp start --name $webService --resource-group $rgName; Write-Error "ERROR: Docker push (timestamp) failed"; exit 1 }
+                        Write-Host "OK Images pushed to ACR"
+
+                        Write-Host ""
+                        Write-Host "[6/6] Restarting web service..."
+                        az webapp start --name $webService --resource-group $rgName
+                        if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to restart web service"; exit 1 }
+                        Write-Host "OK Web service restarted successfully"
+                }
         
         Write-Host ""
         Write-Host "========================================"
@@ -212,7 +268,10 @@ hooks:
       shell: sh
       run: |
         set -e
-        
+
+        use_prebuilt_image="${var_usePrebuiltImage:-false}"
+        prebuilt_image_name="${var_prebuiltImageName:-${var_imageName}}"
+
         # Error handling function
         cleanup_on_error() {
             local exit_code=$?
@@ -222,77 +281,103 @@ hooks:
             az webapp start --name ${var_webService} --resource-group ${var_rgName} 2>/dev/null || true
             exit ${exit_code}
         }
-        
-        echo "========================================"
-        echo "PRE-DEPLOY: Building and pushing image"
-        echo "========================================"
-        
-        cd ..
-        timestamp="$(date +"%Y%m%d-%H%M%S")"
-        echo ""
-        echo "Deployment timestamp: ${timestamp}"
-        echo "Image: ${var_containerRegistry}/${var_imageName}:${timestamp}"
-        
-        echo ""
-        echo "[1/6] Stopping web service..."
-        if az webapp stop --name ${var_webService} --resource-group ${var_rgName}; then
-            echo "✓ Web service stopped successfully"
+
+        if [ "${use_prebuilt_image}" = "true" ]; then
+            echo "========================================"
+            echo "PRE-DEPLOY: Using prebuilt image"
+            echo "========================================"
+            echo "INFO: Docker build/push skipped - using prebuilt latest tag"
+            echo ""
+
+            echo "[1/3] Logging in to ACR (${var_acrName})..."
+            az acr login --name ${var_acrName}
+            echo "OK ACR login successful"
+
+            echo ""
+            echo "[2/3] Pointing App Service at latest image..."
+            az webapp config container set \
+                --name ${var_webService} \
+                --resource-group ${var_rgName} \
+                --container-image-name "${var_containerRegistry}/${prebuilt_image_name}:latest" \
+                --container-registry-url "https://${var_containerRegistry}"
+            echo "OK App Service container configured"
+
+            echo ""
+            echo "[3/3] Restarting web service..."
+            az webapp restart --name ${var_webService} --resource-group ${var_rgName}
+            echo "OK Web service restarted"
         else
-            echo "✗ ERROR: Failed to stop web service" >&2
-            exit 1
-        fi
-        
-        echo ""
-        echo "[2/6] Building Docker image..."
-        echo "Context: $(pwd)"
-        echo "Dockerfile: application/single_app/Dockerfile"
-        if docker build -f application/single_app/Dockerfile \
-            -t ${var_containerRegistry}/${var_imageName}:${timestamp} . ; then
-            echo "✓ Docker image built successfully"
-        else
-            cleanup_on_error "Docker build"
-        fi
-        
-        echo ""
-        echo "[3/6] Tagging image as latest..."
-        if docker tag ${var_containerRegistry}/${var_imageName}:${timestamp} \
-            ${var_containerRegistry}/${var_imageName}:latest ; then
-            echo "✓ Image tagged successfully"
-        else
-            cleanup_on_error "Docker tag"
-        fi
-        
-        echo ""
-        echo "[4/6] Logging in to ACR (${var_acrName})..."
-        if az acr login --name ${var_acrName}; then
-            echo "✓ ACR login successful"
-        else
-            cleanup_on_error "ACR login"
-        fi
-        
-        echo ""
-        echo "[5/6] Pushing images to ACR..."
-        echo "  → Pushing latest tag..."
-        if docker push ${var_containerRegistry}/${var_imageName}:latest; then
-            echo "  ✓ Latest tag pushed successfully"
-        else
-            cleanup_on_error "Docker push (latest)"
-        fi
-        
-        echo "  → Pushing timestamped tag..."
-        if docker push ${var_containerRegistry}/${var_imageName}:${timestamp}; then
-            echo "  ✓ Timestamped tag pushed successfully"
-        else
-            cleanup_on_error "Docker push (timestamp)"
-        fi
-        
-        echo ""
-        echo "[6/6] Restarting web service..."
-        if az webapp start --name ${var_webService} --resource-group ${var_rgName}; then
-            echo "✓ Web service restarted successfully"
-        else
-            echo "✗ ERROR: Failed to restart web service" >&2
-            exit 1
+            echo "========================================"
+            echo "PRE-DEPLOY: Building and pushing image"
+            echo "========================================"
+
+            cd ..
+            timestamp="$(date +"%Y%m%d-%H%M%S")"
+            echo ""
+            echo "Deployment timestamp: ${timestamp}"
+            echo "Image: ${var_containerRegistry}/${var_imageName}:${timestamp}"
+
+            echo ""
+            echo "[1/6] Stopping web service..."
+            if az webapp stop --name ${var_webService} --resource-group ${var_rgName}; then
+                echo "✓ Web service stopped successfully"
+            else
+                echo "✗ ERROR: Failed to stop web service" >&2
+                exit 1
+            fi
+
+            echo ""
+            echo "[2/6] Building Docker image..."
+            echo "Context: $(pwd)"
+            echo "Dockerfile: application/single_app/Dockerfile"
+            if docker build -f application/single_app/Dockerfile \
+                -t ${var_containerRegistry}/${var_imageName}:${timestamp} . ; then
+                echo "✓ Docker image built successfully"
+            else
+                cleanup_on_error "Docker build"
+            fi
+
+            echo ""
+            echo "[3/6] Tagging image as latest..."
+            if docker tag ${var_containerRegistry}/${var_imageName}:${timestamp} \
+                ${var_containerRegistry}/${var_imageName}:latest ; then
+                echo "✓ Image tagged successfully"
+            else
+                cleanup_on_error "Docker tag"
+            fi
+
+            echo ""
+            echo "[4/6] Logging in to ACR (${var_acrName})..."
+            if az acr login --name ${var_acrName}; then
+                echo "✓ ACR login successful"
+            else
+                cleanup_on_error "ACR login"
+            fi
+
+            echo ""
+            echo "[5/6] Pushing images to ACR..."
+            echo "  → Pushing latest tag..."
+            if docker push ${var_containerRegistry}/${var_imageName}:latest; then
+                echo "  ✓ Latest tag pushed successfully"
+            else
+                cleanup_on_error "Docker push (latest)"
+            fi
+
+            echo "  → Pushing timestamped tag..."
+            if docker push ${var_containerRegistry}/${var_imageName}:${timestamp}; then
+                echo "  ✓ Timestamped tag pushed successfully"
+            else
+                cleanup_on_error "Docker push (timestamp)"
+            fi
+
+            echo ""
+            echo "[6/6] Restarting web service..."
+            if az webapp start --name ${var_webService} --resource-group ${var_rgName}; then
+                echo "✓ Web service restarted successfully"
+            else
+                echo "✗ ERROR: Failed to restart web service" >&2
+                exit 1
+            fi
         fi
         
         echo ""
@@ -312,31 +397,31 @@ hooks:
         Write-Host "POST-UP: Final configuration"
         Write-Host "========================================"
         
-        if ("${var_enablePrivateNetworking}" -eq "true") {
+        if ("$env:var_enablePrivateNetworking" -eq "true") {
             Write-Host ""
             Write-Host "Configuring private networking..."
             
             Write-Host ""
             Write-Host "[1/4] Disabling public network access for CosmosDB..."
-            az cosmosdb update --name ${var_cosmosDb_accountName} --resource-group ${var_rgName} --public-network-access Disabled | Out-Null
+            az cosmosdb update --name $env:var_cosmosDb_accountName --resource-group $env:var_rgName --public-network-access Disabled | Out-Null
             if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to disable CosmosDB public access"; exit 1 }
             Write-Host "OK CosmosDB public access disabled"
             
             Write-Host ""
             Write-Host "[2/4] Disabling public network access for Key Vault..."
-            az keyvault update --name ${var_keyVaultName} --resource-group ${var_rgName} --public-network-access Disabled | Out-Null
+            az keyvault update --name $env:var_keyVaultName --resource-group $env:var_rgName --public-network-access Disabled | Out-Null
             if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to disable Key Vault public access"; exit 1 }
             Write-Host "OK Key Vault public access disabled"
             
             Write-Host ""
             Write-Host "[3/4] Disabling public network access for Azure Container Registry..."
-            az acr update --name ${var_acrName} --resource-group ${var_rgName} --public-network-enabled false | Out-Null
+            az acr update --name $env:var_acrName --resource-group $env:var_rgName --public-network-enabled false | Out-Null
             if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to disable ACR public access"; exit 1 }
             Write-Host "OK ACR public access disabled"
             
             Write-Host ""
             Write-Host "[4/4] Disabling public network access for Web Application..."
-            az resource update --name ${var_webService} --resource-group ${var_rgName} --resource-type "Microsoft.Web/sites" --set properties.publicNetworkAccess=Disabled
+            az resource update --name $env:var_webService --resource-group $env:var_rgName --resource-type "Microsoft.Web/sites" --set properties.publicNetworkAccess=Disabled
             if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to disable Web Application public access"; exit 1 }
             Write-Host "OK Web Application public access disabled"
             

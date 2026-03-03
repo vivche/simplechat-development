@@ -77,6 +77,61 @@ pwsh --version
 | File | Change |
 |---|---|
 | `deployers/azure.yaml` | Added `windows: pwsh` blocks to `postprovision`, `predeploy`, and `postup` hooks |
+| `deployers/azure.yaml` | Updated `predeploy` to support **conditional mode**: default Docker build/push or optional prebuilt-image mode |
+
+### Note on CosmosDB Permission Step (Windows)
+
+In `postprovision.windows`, CosmosDB permissions are now executed via a dedicated
+PowerShell child script:
+
+- `./bicep/cosmosDb-postDeployPerms.ps1`
+
+This mirrors the Linux pattern (which uses `./bicep/cosmosDb-postDeployPerms.sh`) and keeps
+hook logic clean in `azure.yaml` while preserving platform-specific implementation details.
+
+## Update — Conditional `predeploy` Mode (Windows + Linux)
+
+To support both standard deployments and GCC-H-style prebuilt image deployments, `predeploy`
+is now conditional in both `windows` and `posix` blocks.
+
+### Default behavior (safe for Linux and existing pipelines)
+
+If no override is provided, `predeploy` keeps the original flow:
+
+1. Stop web app
+2. Build Docker image
+3. Tag as `latest`
+4. Login to ACR
+5. Push tags
+6. Start web app
+
+### Optional prebuilt image behavior
+
+If `var_usePrebuiltImage=true`, `predeploy` skips Docker build/push and instead:
+
+1. Logs in to ACR
+2. Sets App Service container image to `:latest`
+3. Restarts the web app
+
+### Variables
+
+- `var_usePrebuiltImage`
+  - `false` (default): build/push image during `azd up`
+  - `true`: use already-published image
+- `var_prebuiltImageName`
+  - Optional override for image repo name used in prebuilt mode
+  - Defaults to `var_imageName` when not set
+
+### Example usage
+
+```powershell
+azd env set var_usePrebuiltImage true
+azd env set var_prebuiltImageName simple-chat
+azd up
+```
+
+This keeps Linux/CI compatibility while enabling Windows/GCC-H workflows that publish
+images outside `azd up` (for example via GitHub Actions).
 
 ## Related Fixes
 
