@@ -7,6 +7,31 @@ from swagger_wrapper import swagger_route, get_auth_security
 import re
 
 
+def _create_management_client(subscription_id, auth_type):
+    if auth_type == 'managed_identity':
+        credential = DefaultAzureCredential()
+    else:
+        credential = ClientSecretCredential(
+            TENANT_ID,
+            CLIENT_ID,
+            MICROSOFT_PROVIDER_AUTHENTICATION_SECRET,
+            authority=authority
+        )
+
+    if AZURE_ENVIRONMENT == "usgovernment" or AZURE_ENVIRONMENT == "custom":
+        return CognitiveServicesManagementClient(
+            credential=credential,
+            subscription_id=subscription_id,
+            base_url=resource_manager,
+            credential_scopes=credential_scopes
+        )
+
+    return CognitiveServicesManagementClient(
+        credential=credential,
+        subscription_id=subscription_id
+    )
+
+
 def register_route_backend_models(app):
     """
     Register backend routes for fetching Azure OpenAI models.
@@ -26,27 +51,12 @@ def register_route_backend_models(app):
         subscription_id = settings.get('azure_openai_gpt_subscription_id', '')
         resource_group = settings.get('azure_openai_gpt_resource_group', '')
         account_name = settings.get('azure_openai_gpt_endpoint', '').split('.')[0].replace("https://", "")
+        auth_type = settings.get('azure_openai_gpt_authentication_type', 'key').strip().lower()
 
         if not subscription_id or not resource_group or not account_name:
             return jsonify({"error": "Azure GPT Model subscription/RG/endpoint not configured"}), 400
 
-        if AZURE_ENVIRONMENT == "usgovernment" or AZURE_ENVIRONMENT == "custom":
-            
-            credential = ClientSecretCredential(TENANT_ID, CLIENT_ID, MICROSOFT_PROVIDER_AUTHENTICATION_SECRET, authority=authority)
-
-            client = CognitiveServicesManagementClient(
-                credential=credential,
-                subscription_id=subscription_id,
-                base_url=resource_manager,
-                credential_scopes=credential_scopes
-            )
-        else:
-            credential = ClientSecretCredential(TENANT_ID, CLIENT_ID, MICROSOFT_PROVIDER_AUTHENTICATION_SECRET)
-
-            client = CognitiveServicesManagementClient(
-                credential=credential,
-                subscription_id=subscription_id
-            )
+        client = _create_management_client(subscription_id, auth_type)
 
         models = []
         try:
@@ -86,27 +96,12 @@ def register_route_backend_models(app):
         subscription_id = settings.get('azure_openai_embedding_subscription_id', '')
         resource_group = settings.get('azure_openai_embedding_resource_group', '')
         account_name = settings.get('azure_openai_embedding_endpoint', '').split('.')[0].replace("https://", "")
+        auth_type = settings.get('azure_openai_embedding_authentication_type', 'key').strip().lower()
 
         if not subscription_id or not resource_group or not account_name:
             return jsonify({"error": "Azure Embedding Model subscription/RG/endpoint not configured"}), 400
 
-        if AZURE_ENVIRONMENT == "usgovernment" or AZURE_ENVIRONMENT == "custom":
-            
-            credential = ClientSecretCredential(TENANT_ID, CLIENT_ID, MICROSOFT_PROVIDER_AUTHENTICATION_SECRET, authority=authority)
-
-            client = CognitiveServicesManagementClient(
-                credential=credential,
-                subscription_id=subscription_id,
-                base_url=resource_manager,
-                credential_scopes=credential_scopes
-            )
-        else:
-            credential = ClientSecretCredential(TENANT_ID, CLIENT_ID, MICROSOFT_PROVIDER_AUTHENTICATION_SECRET)
-
-            client = CognitiveServicesManagementClient(
-                credential=credential,
-                subscription_id=subscription_id
-            )
+        client = _create_management_client(subscription_id, auth_type)
 
         models = []
         try:
@@ -144,27 +139,12 @@ def register_route_backend_models(app):
         subscription_id = settings.get('azure_openai_image_gen_subscription_id', '')
         resource_group = settings.get('azure_openai_image_gen_resource_group', '')
         account_name = settings.get('azure_openai_image_gen_endpoint', '').split('.')[0].replace("https://", "")
+        auth_type = settings.get('azure_openai_image_gen_authentication_type', 'key').strip().lower()
 
         if not subscription_id or not resource_group or not account_name:
             return jsonify({"error": "Azure Image Model subscription/RG/endpoint not configured"}), 400
 
-        if AZURE_ENVIRONMENT == "usgovernment" or AZURE_ENVIRONMENT == "custom":
-            
-            credential = ClientSecretCredential(TENANT_ID, CLIENT_ID, MICROSOFT_PROVIDER_AUTHENTICATION_SECRET, authority=authority)
-
-            client = CognitiveServicesManagementClient(
-                credential=credential,
-                subscription_id=subscription_id,
-                base_url=resource_manager,
-                credential_scopes=credential_scopes
-            )
-        else:
-            credential = ClientSecretCredential(TENANT_ID, CLIENT_ID, MICROSOFT_PROVIDER_AUTHENTICATION_SECRET)
-
-            client = CognitiveServicesManagementClient(
-                credential=credential,
-                subscription_id=subscription_id
-            )
+        client = _create_management_client(subscription_id, auth_type)
 
         models = []
         try:
