@@ -10,12 +10,8 @@ var standardRetentionPolicy = {
 }
 
 // Standard log categories using category groups (recommended for most resources)
+// Note: 'Audit' categoryGroup is not supported in Azure Government (GCC-H) - 'allLogs' is a superset and supported in all environments
 var standardLogCategories = [
-  {
-    categoryGroup: 'Audit'
-    enabled: true
-    retentionPolicy: standardRetentionPolicy
-  }
   {
     categoryGroup: 'allLogs'
     enabled: true
