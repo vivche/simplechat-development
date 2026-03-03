@@ -16,6 +16,53 @@ hooks:
   postprovision:
   # this is run after the infrastructure has been provisioned but before services are deployed.
   # primary use is to configure application settings and permissions
+    windows:
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        
+        Write-Host "========================================"
+        Write-Host "POST-PROVISION: Starting configuration"
+        Write-Host "========================================"
+        
+        if ("${var_configureApplication}" -eq "true") {
+            Write-Host ""
+            Write-Host "[1/4] Granting permissions to CosmosDB..."
+            bash ./bicep/cosmosDb-postDeployPerms.sh
+            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to grant CosmosDB permissions"; exit 1 }
+            Write-Host "OK CosmosDB permissions granted successfully"
+            
+            Write-Host ""
+            Write-Host "[2/4] Installing Python dependencies..."
+            python -m venv .venv
+            .venv\Scripts\pip install -r ./bicep/requirements.txt | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to install Python dependencies"; exit 1 }
+            Write-Host "OK Dependencies installed successfully"
+            
+            Write-Host ""
+            Write-Host "[3/4] Running post-deployment configuration..."
+            .venv\Scripts\python ./bicep/postconfig.py
+            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Post-deployment configuration failed"; exit 1 }
+            Write-Host "OK Post-deployment configuration completed"
+            
+            Write-Host ""
+            Write-Host "[4/4] Restarting web service to apply settings..."
+            az webapp restart --name ${var_webService} --resource-group ${var_rgName}
+            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to restart web service"; exit 1 }
+            Write-Host "OK Web service restarted successfully"
+            
+            Write-Host ""
+            Write-Host "========================================"
+            Write-Host "POST-PROVISION: Completed successfully"
+            Write-Host "========================================"
+        } else {
+            Write-Host ""
+            Write-Host "INFO: Skipping post-deployment configuration (var_configureApplication is not true)"
+            Write-Host ""
+            Write-Host "========================================"
+            Write-Host "POST-PROVISION: Completed (skipped)"
+            Write-Host "========================================"
+        }
     posix:
       shell: sh
       run: |
@@ -104,6 +151,63 @@ hooks:
   predeploy:
   # this is run after infrastructure and postprovisioning but before service deployment
   # primary use is to build and push container images
+    windows:
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        
+        Write-Host "========================================"
+        Write-Host "PRE-DEPLOY: Building and pushing image"
+        Write-Host "========================================"
+        
+        Set-Location ..
+        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        Write-Host ""
+        Write-Host "Deployment timestamp: $timestamp"
+        Write-Host "Image: ${var_containerRegistry}/${var_imageName}:$timestamp"
+        
+        Write-Host ""
+        Write-Host "[1/6] Stopping web service..."
+        az webapp stop --name ${var_webService} --resource-group ${var_rgName}
+        if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to stop web service"; exit 1 }
+        Write-Host "OK Web service stopped"
+        
+        Write-Host ""
+        Write-Host "[2/6] Building Docker image..."
+        docker build -f application/single_app/Dockerfile -t "${var_containerRegistry}/${var_imageName}:$timestamp" .
+        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: Docker build failed"; exit 1 }
+        Write-Host "OK Docker image built successfully"
+        
+        Write-Host ""
+        Write-Host "[3/6] Tagging image as latest..."
+        docker tag "${var_containerRegistry}/${var_imageName}:$timestamp" "${var_containerRegistry}/${var_imageName}:latest"
+        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: Docker tag failed"; exit 1 }
+        Write-Host "OK Image tagged successfully"
+        
+        Write-Host ""
+        Write-Host "[4/6] Logging in to ACR (${var_acrName})..."
+        az acr login --name ${var_acrName}
+        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: ACR login failed"; exit 1 }
+        Write-Host "OK ACR login successful"
+        
+        Write-Host ""
+        Write-Host "[5/6] Pushing images to ACR..."
+        docker push "${var_containerRegistry}/${var_imageName}:latest"
+        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: Docker push (latest) failed"; exit 1 }
+        docker push "${var_containerRegistry}/${var_imageName}:$timestamp"
+        if ($LASTEXITCODE -ne 0) { az webapp start --name ${var_webService} --resource-group ${var_rgName}; Write-Error "ERROR: Docker push (timestamp) failed"; exit 1 }
+        Write-Host "OK Images pushed to ACR"
+        
+        Write-Host ""
+        Write-Host "[6/6] Restarting web service..."
+        az webapp start --name ${var_webService} --resource-group ${var_rgName}
+        if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to restart web service"; exit 1 }
+        Write-Host "OK Web service restarted successfully"
+        
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "PRE-DEPLOY: Completed successfully"
+        Write-Host "========================================"
     posix:
       shell: sh
       run: |
@@ -199,6 +303,54 @@ hooks:
   postup:
     # this is the final step to run after everything else is done
     # primary use is disable public network access if private endpoints are used
+    windows:
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        
+        Write-Host "========================================"
+        Write-Host "POST-UP: Final configuration"
+        Write-Host "========================================"
+        
+        if ("${var_enablePrivateNetworking}" -eq "true") {
+            Write-Host ""
+            Write-Host "Configuring private networking..."
+            
+            Write-Host ""
+            Write-Host "[1/4] Disabling public network access for CosmosDB..."
+            az cosmosdb update --name ${var_cosmosDb_accountName} --resource-group ${var_rgName} --public-network-access Disabled | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to disable CosmosDB public access"; exit 1 }
+            Write-Host "OK CosmosDB public access disabled"
+            
+            Write-Host ""
+            Write-Host "[2/4] Disabling public network access for Key Vault..."
+            az keyvault update --name ${var_keyVaultName} --resource-group ${var_rgName} --public-network-access Disabled | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to disable Key Vault public access"; exit 1 }
+            Write-Host "OK Key Vault public access disabled"
+            
+            Write-Host ""
+            Write-Host "[3/4] Disabling public network access for Azure Container Registry..."
+            az acr update --name ${var_acrName} --resource-group ${var_rgName} --public-network-enabled false | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to disable ACR public access"; exit 1 }
+            Write-Host "OK ACR public access disabled"
+            
+            Write-Host ""
+            Write-Host "[4/4] Disabling public network access for Web Application..."
+            az resource update --name ${var_webService} --resource-group ${var_rgName} --resource-type "Microsoft.Web/sites" --set properties.publicNetworkAccess=Disabled
+            if ($LASTEXITCODE -ne 0) { Write-Error "ERROR: Failed to disable Web Application public access"; exit 1 }
+            Write-Host "OK Web Application public access disabled"
+            
+            Write-Host ""
+            Write-Host "OK Private networking configured successfully"
+        } else {
+            Write-Host ""
+            Write-Host "INFO: Skipping private networking configuration (var_enablePrivateNetworking is not true)"
+        }
+        
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "OK DEPLOYMENT COMPLETED SUCCESSFULLY"
+        Write-Host "========================================"
     posix:
       shell: sh
       run: |
