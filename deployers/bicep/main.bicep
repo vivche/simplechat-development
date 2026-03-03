@@ -80,34 +80,42 @@ param enableDiagLogging bool
 - Default is false''')
 param enablePrivateNetworking bool
 
-@description('''Array of GPT model names to deploy to the OpenAI resource.''')
+@description('''SKU name applied to all OpenAI model deployments.
+- Standard: Available in all environments including Azure Government (GCC-H). Required for USGov deployments.
+- GlobalStandard: Higher availability via global Azure AI infrastructure. Azure Commercial only — NOT available in GCC-H.
+- Default is Standard for maximum compatibility.''')
+@allowed([
+  'Standard'
+  'GlobalStandard'
+])
+param openAiModelSkuName string = 'Standard'
+
+@description('''Array of GPT model names to deploy to the OpenAI resource.
+- skuName in individual entries is overridden by openAiModelSkuName parameter.''')
 param gptModels array = [
   {
     modelName: 'gpt-4.1'
     modelVersion: '2025-04-14'
-    skuName: 'GlobalStandard'
     skuCapacity: 150
   }
   {
     modelName: 'gpt-4o'
     modelVersion: '2024-11-20'
-    skuName: 'GlobalStandard'
     skuCapacity: 100
   }
 ]
 
-@description('''Array of embedding model names to deploy to the OpenAI resource.''')
+@description('''Array of embedding model names to deploy to the OpenAI resource.
+- skuName in individual entries is overridden by openAiModelSkuName parameter.''')
 param embeddingModels array = [
   {
     modelName: 'text-embedding-3-small'
     modelVersion: '1'
-    skuName: 'GlobalStandard'
     skuCapacity: 150
   }
   {
     modelName: 'text-embedding-3-large'
     modelVersion: '1'
-    skuName: 'GlobalStandard'
     skuCapacity: 150
   }
 ]
@@ -147,6 +155,20 @@ param deployVideoIndexerService bool
 // variable declarations for the main deployment 
 //=========================================================
 var rgName = '${appName}-${environment}-rg'
+
+// Inject openAiModelSkuName into each model entry, overriding any skuName set in the param arrays
+var effectiveGptModels = [for model in gptModels: {
+  modelName: model.modelName
+  modelVersion: model.modelVersion
+  skuName: openAiModelSkuName
+  skuCapacity: model.skuCapacity
+}]
+var effectiveEmbeddingModels = [for model in embeddingModels: {
+  modelName: model.modelName
+  modelVersion: model.modelVersion
+  skuName: openAiModelSkuName
+  skuCapacity: model.skuCapacity
+}]
 var requiredTags = { application: appName, environment: environment, 'azd-env-name': azdEnvironmentName }
 var tags = union(requiredTags, specialTags)
 var acrCloudSuffix = cloudEnvironment == 'AzureCloud' ? '.azurecr.io' : '.azurecr.us'
@@ -385,8 +407,8 @@ module openAI 'modules/openAI.bicep' = {
     authenticationType: authenticationType
     configureApplicationPermissions: configureApplicationPermissions
 
-    gptModels: gptModels
-    embeddingModels: embeddingModels
+    gptModels: effectiveGptModels
+    embeddingModels: effectiveEmbeddingModels
 
     enablePrivateNetworking: enablePrivateNetworking
   }
@@ -619,9 +641,9 @@ output var_documentIntelligenceServiceEndpoint string = docIntel.outputs.documen
 output var_keyVaultName string = keyVault.outputs.keyVaultName
 output var_keyVaultUri string = keyVault.outputs.keyVaultUri
 output var_openAIEndpoint string = openAI.outputs.openAIEndpoint
-output var_openAIGPTModels array = gptModels
+output var_openAIGPTModels array = effectiveGptModels
 output var_openAIResourceGroup string = openAI.outputs.openAIResourceGroup //may be able to remove
-output var_openAIEmbeddingModels array = embeddingModels
+output var_openAIEmbeddingModels array = effectiveEmbeddingModels
 #disable-next-line BCP318 // expect one value to be null
 output var_redisCacheHostName string = deployRedisCache ? redisCache.outputs.redisCacheHostName : ''
 output var_rgName string = rgName
