@@ -77,7 +77,7 @@ resource webApp 'Microsoft.Web/sites@2022-03-01' = {
       ftpsState: 'Disabled'
       healthCheckPath: '/external/healthcheck'
       appSettings: [
-        { name: 'AZURE_ENDPOINT', value: azurePlatform == 'AzureUSGovernment' ? 'usgovernment' : 'public' }
+        { name: 'AZURE_ENVIRONMENT', value: azurePlatform == 'AzureUSGovernment' ? 'usgovernment' : 'public' }
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
         { name: 'AZURE_COSMOS_ENDPOINT', value: cosmosDb.properties.documentEndpoint }
         { name: 'AZURE_COSMOS_AUTHENTICATION_TYPE', value: toLower(authenticationType) }
