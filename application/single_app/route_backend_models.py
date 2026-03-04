@@ -8,6 +8,7 @@ import re
 
 
 def _create_management_client(subscription_id, auth_type):
+    """Create a management client for model discovery."""
     if auth_type == 'managed_identity':
         credential = DefaultAzureCredential()
     else:

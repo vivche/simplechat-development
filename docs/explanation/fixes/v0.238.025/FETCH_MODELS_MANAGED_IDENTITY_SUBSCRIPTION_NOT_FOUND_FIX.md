@@ -3,8 +3,10 @@
 ## Overview
 This document describes the fix for Azure OpenAI model discovery failures when using Managed Identity authentication.
 
-Fixed in version: **0.238.024**
-Related config version: `application/single_app/config.py` (`VERSION = "0.238.024"`)
+Related issue: **#763**
+
+Fixed in version: **0.238.025**
+Related config version: `application/single_app/config.py` (`VERSION = "0.238.025"`)
 
 ## Issue Statement
 In GCC-H deployments, the Admin action to fetch Azure OpenAI deployments (GPT, Embedding, and Image models) could fail with `SubscriptionNotFound`, even when the subscription and resource group values were correct.
