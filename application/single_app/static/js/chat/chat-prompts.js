@@ -9,7 +9,7 @@ export const promptSelect = document.getElementById("prompt-select"); // Keep ex
 const searchPromptsBtn = document.getElementById("search-prompts-btn");
 
 export function loadUserPrompts() {
-  return fetch("/api/prompts")
+  return fetch("/api/prompts?page_size=20")
     .then(r => r.json())
     .then(data => {
       if (data.prompts) {
@@ -20,7 +20,7 @@ export function loadUserPrompts() {
 }
 
 export function loadGroupPrompts() {
-  return fetch("/api/group_prompts")
+  return fetch("/api/group_prompts?page_size=20")
     .then(r => {
       if (!r.ok) {
         // Handle 400 errors gracefully (e.g., no active group selected)
@@ -42,7 +42,7 @@ export function loadGroupPrompts() {
 }
 
 export function loadPublicPrompts() {
-  return fetch("/api/public_prompts")
+  return fetch("/api/public_prompts?page_size=20")
     .then(r => {
       if (!r.ok) {
         // Handle 400 errors gracefully
