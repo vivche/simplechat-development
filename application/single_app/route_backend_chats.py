@@ -949,7 +949,7 @@ def build_search_augmentation_system_prompt(retrieved_content):
 def build_tabular_computed_results_system_message(source_label, tabular_analysis):
     """Build the outer-model handoff message for successful tabular analysis."""
     rendered_analysis = str(tabular_analysis or '').strip()
-    max_handoff_chars = 24000
+    max_handoff_chars = 200000
     if len(rendered_analysis) > max_handoff_chars:
         rendered_analysis = (
             rendered_analysis[:max_handoff_chars]
@@ -1664,13 +1664,18 @@ def describe_tabular_invocation_conditions(invocation):
     return None
 
 
-def compact_tabular_fallback_value(value, depth=0, max_depth=2):
-    """Reduce large tabular fallback values to prompt-safe summaries."""
+def compact_tabular_fallback_value(value, depth=0, max_depth=2, max_string_length=400):
+    """Reduce large tabular fallback values to prompt-safe summaries.
+
+    max_string_length controls how aggressively string values are truncated.
+    The default of 400 is appropriate for single-row previews; callers that
+    need to fit many rows into a fixed char budget should pass a smaller value
+    computed from (available_chars // (num_rows * num_cols)).
+    """
     if value is None or isinstance(value, (int, float, bool)):
         return value
 
     if isinstance(value, str):
-        max_string_length = 400
         if len(value) <= max_string_length:
             return value
         return f"{value[:max_string_length]}... [truncated {len(value) - max_string_length} chars]"
@@ -1684,7 +1689,7 @@ def compact_tabular_fallback_value(value, depth=0, max_depth=2):
 
     if isinstance(value, list):
         compact_items = [
-            compact_tabular_fallback_value(item, depth=depth + 1, max_depth=max_depth)
+            compact_tabular_fallback_value(item, depth=depth + 1, max_depth=max_depth, max_string_length=max_string_length)
             for item in value[:5]
         ]
         if len(value) > 5:
@@ -1701,6 +1706,7 @@ def compact_tabular_fallback_value(value, depth=0, max_depth=2):
                 item,
                 depth=depth + 1,
                 max_depth=max_depth,
+                max_string_length=max_string_length,
             )
         return compact_mapping
 
@@ -1798,8 +1804,13 @@ def get_tabular_query_overlap_summary(invocations, max_rows=10):
     return best_summary
 
 
-def get_tabular_invocation_compact_payload(invocation, max_rows=5):
-    """Return a compact, prompt-safe summary of a successful tabular invocation."""
+def get_tabular_invocation_compact_payload(invocation, max_rows=5, max_string_length=400):
+    """Return a compact, prompt-safe summary of a successful tabular invocation.
+
+    max_string_length is forwarded to compact_tabular_fallback_value when
+    compacting row data.  Callers that know total row and column counts should
+    pass a dynamically computed cap so all rows fit within the char budget.
+    """
     result_payload = get_tabular_invocation_result_payload(invocation)
     if not result_payload:
         return None
@@ -1890,7 +1901,7 @@ def get_tabular_invocation_compact_payload(invocation, max_rows=5):
         data_rows = get_tabular_invocation_data_rows(invocation)
         if data_rows:
             compact_payload['sample_rows'] = [
-                compact_tabular_fallback_value(row)
+                compact_tabular_fallback_value(row, max_string_length=max_string_length)
                 for row in data_rows[:max_rows]
             ]
             compact_payload['sample_rows_limited'] = len(data_rows) > max_rows
@@ -1920,12 +1931,11 @@ def get_tabular_invocation_compact_payload(invocation, max_rows=5):
             if (
                 total_matches is not None
                 and returned_rows == total_matches
-                and total_matches <= 25
             ):
                 desired_max_rows = max(desired_max_rows, total_matches)
 
             compact_payload['sample_rows'] = [
-                compact_tabular_fallback_value(row)
+                compact_tabular_fallback_value(row, max_string_length=max_string_length)
                 for row in data_rows[:desired_max_rows]
             ]
             compact_payload['sample_rows_limited'] = len(data_rows) > desired_max_rows
@@ -1963,7 +1973,27 @@ def build_tabular_analysis_fallback_from_invocations(invocations):
     if not successful_invocations:
         return None
 
-    max_fallback_chars = 24000
+    # Detect if any row-returning invocation retrieved a complete large dataset.
+    # When it did, raise the char budget so the outer model receives as many rows
+    # as the budget allows rather than being capped at the normal 5-row preview.
+    complete_dataset_row_counts = {}
+    for inv in successful_invocations:
+        fn = getattr(inv, 'function_name', '')
+        if fn not in {'filter_rows', 'search_rows', 'query_tabular_data'}:
+            continue
+        inv_payload = get_tabular_invocation_result_payload(inv) or {}
+        try:
+            inv_total = int(inv_payload.get('total_matches') or 0)
+            inv_returned = int(inv_payload.get('returned_rows') or 0)
+        except (TypeError, ValueError):
+            continue
+        if inv_total > 25 and inv_returned == inv_total:
+            complete_dataset_row_counts[id(inv)] = inv_total
+
+    has_complete_large_dataset = bool(complete_dataset_row_counts)
+    # Use a larger char budget when full row data is available so the outer model
+    # can reconstruct exports or CSVs directly from the fallback context.
+    max_fallback_chars = 200000 if has_complete_large_dataset else 24000
     coverage_note_reserve = 1200
     overlap_summary = get_tabular_query_overlap_summary(successful_invocations, max_rows=10)
     rendered_sections = [
@@ -1987,7 +2017,33 @@ def build_tabular_analysis_fallback_from_invocations(invocations):
     invocation_limit = 8
     candidate_invocations = successful_invocations[:invocation_limit]
     for invocation in candidate_invocations:
-        compact_payload = get_tabular_invocation_compact_payload(invocation, max_rows=5)
+        # For invocations that retrieved a complete large dataset, use the full
+        # row count as max_rows so the char budget — not an arbitrary row cap —
+        # controls how much data is included in the fallback.
+        inv_complete_row_count = complete_dataset_row_counts.get(id(invocation), 0)
+        inv_max_rows = inv_complete_row_count if inv_complete_row_count > 0 else 5
+        # Compute a dynamic per-value string cap so that all rows fit within the
+        # char budget even when the requested columns contain long text values.
+        # Formula: divide the available value budget by (rows × cols), then
+        # clamp to [20, 400].  20 chars is enough for most identifiers/codes;
+        # 400 is the normal cap used for small result sets.
+        inv_max_string_length = 400
+        if inv_complete_row_count > 0:
+            _sample_rows = get_tabular_invocation_data_rows(invocation)
+            if _sample_rows and isinstance(_sample_rows[0], dict):
+                _first_row = _sample_rows[0]
+                _num_rows = max(1, inv_complete_row_count)
+                _num_cols = max(1, len(_first_row))
+                # Estimate per-row JSON overhead: key names + punctuation (~6 chars
+                # per key for `"key": `) plus brackets and separators (~12 chars).
+                _col_key_overhead = sum(len(str(k)) + 6 for k in _first_row.keys())
+                _row_overhead = _col_key_overhead + 12
+                _value_budget = max(0, (max_fallback_chars - coverage_note_reserve) - _num_rows * _row_overhead)
+                _per_value = _value_budget // (_num_rows * _num_cols)
+                inv_max_string_length = max(20, min(400, _per_value))
+        compact_payload = get_tabular_invocation_compact_payload(
+            invocation, max_rows=inv_max_rows, max_string_length=inv_max_string_length
+        )
         if compact_payload is None:
             continue
 
@@ -4013,7 +4069,11 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
                                    source_hint="workspace", group_id=None,
                                    public_workspace_id=None,
                                    execution_mode='analysis',
-                                   tabular_file_contexts=None):
+                                   tabular_file_contexts=None,
+                                   gpt_endpoint=None,
+                                   gpt_api_version=None,
+                                   gpt_auth=None,
+                                   gpt_provider=None):
     """Run lightweight SK with TabularProcessingPlugin to analyze tabular data.
 
     Creates a temporary Kernel with only the TabularProcessingPlugin, uses the
@@ -4058,7 +4118,43 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
 
         # 2. Create chat service using same config as main chat
         enable_gpt_apim = settings.get('enable_gpt_apim', False)
-        if enable_gpt_apim:
+        if gpt_endpoint:
+            # Multi-endpoint model: use the resolved endpoint and auth from the caller
+            resolved_api_version = gpt_api_version or settings.get('azure_openai_gpt_api_version')
+            resolved_auth = gpt_auth or {}
+            resolved_auth_type = str(resolved_auth.get('type') or '').lower()
+            normalized_provider = str(gpt_provider or 'aoai').lower()
+            if resolved_auth_type in ('api_key', 'key'):
+                chat_service = AzureChatCompletion(
+                    service_id="tabular-analysis",
+                    deployment_name=gpt_model,
+                    endpoint=gpt_endpoint,
+                    api_key=resolved_auth.get('api_key'),
+                    api_version=resolved_api_version,
+                )
+            else:
+                if resolved_auth_type == 'service_principal':
+                    credential = ClientSecretCredential(
+                        tenant_id=resolved_auth.get('tenant_id'),
+                        client_id=resolved_auth.get('client_id'),
+                        client_secret=resolved_auth.get('client_secret'),
+                        authority=resolve_authority(resolved_auth),
+                    )
+                else:
+                    managed_identity_client_id = resolved_auth.get('managed_identity_client_id') or None
+                    credential = DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id)
+                scope = cognitive_services_scope
+                if normalized_provider in ('aifoundry', 'new_foundry'):
+                    scope = resolve_foundry_scope_for_auth(resolved_auth, endpoint=gpt_endpoint)
+                token_provider = get_bearer_token_provider(credential, scope)
+                chat_service = AzureChatCompletion(
+                    service_id="tabular-analysis",
+                    deployment_name=gpt_model,
+                    endpoint=gpt_endpoint,
+                    api_version=resolved_api_version,
+                    ad_token_provider=token_provider,
+                )
+        elif enable_gpt_apim:
             chat_service = AzureChatCompletion(
                 service_id="tabular-analysis",
                 deployment_name=gpt_model,
@@ -4478,7 +4574,7 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
                     "IMPORTANT:\n"
                     "0. Use the source_context listed in FILE SCHEMAS for the matching filename when calling tabular_processing functions.\n"
                     "1. If the right worksheet is unclear on a multi-sheet workbook, you may call describe_tabular_file without sheet_name first, then continue with analytical tool calls.\n"
-                    "2. If the question includes an exact identifier, exact entity name, or asks where a topic or value appears and the correct starting worksheet or column is unclear, begin with search_rows, filter_rows, or query_tabular_data without sheet_name so the plugin can perform a cross-sheet discovery search. Omit search_columns on search_rows to search all columns, and use return_columns to surface the fields most relevant to the lookup.\n"
+                    "2. If the question includes an exact identifier, exact entity name, or asks where a topic or value appears and the correct starting worksheet or column is unclear, begin with search_rows, filter_rows, or query_tabular_data without sheet_name so the plugin can perform a cross-sheet discovery search. Omit search_columns on search_rows to search all columns, and use return_columns to surface the fields most relevant to the lookup. The return_columns parameter is supported by filter_rows, query_tabular_data, and search_rows.\n"
                     "3. After the first discovery step, pass sheet_name='<name>' on follow-up analytical calls for multi-sheet workbooks. Do not rely on a default sheet for cross-sheet entity lookups.\n"
                     "4. Use search_rows, filter_rows, or query_tabular_data first when you need full matching rows. Use lookup_value only when you already know the exact worksheet and target column.\n"
                     "5. Do not start with aggregate_column, group_by_aggregate, or group_by_datetime_component until you have located the relevant entity rows.\n"
@@ -4523,7 +4619,7 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
                 "IMPORTANT:\n"
                 "1. Use the pre-loaded schema to pick the correct columns, then call the plugin functions. Use the source_context listed in FILE SCHEMAS for the matching filename.\n"
                 "2. For multi-sheet workbooks, review the sheet_directory to find the most relevant sheet for the question. If the right worksheet is still unclear, call describe_tabular_file without sheet_name, then continue with analytical calls. Pass sheet_name='<name>' in follow-up analytical tool calls unless a trustworthy default sheet has already been established or you are intentionally doing an initial cross-sheet discovery step. If a CROSS-SHEET BRIDGE PLAN is provided, query the listed worksheets explicitly and do not rely on a default sheet.\n"
-                "3. If the question includes an exact identifier or asks where a topic, phrase, path, code, or other value appears and the correct starting worksheet or column is unclear, begin with search_rows, filter_rows, or query_tabular_data without sheet_name so the plugin can perform a cross-sheet discovery search. Omit search_columns on search_rows to search all columns, and use return_columns to surface the columns most relevant to the question.\n"
+                "3. If the question includes an exact identifier or asks where a topic, phrase, path, code, or other value appears and the correct starting worksheet or column is unclear, begin with search_rows, filter_rows, or query_tabular_data without sheet_name so the plugin can perform a cross-sheet discovery search. Omit search_columns on search_rows to search all columns, and use return_columns to surface the columns most relevant to the question. The return_columns parameter is supported by filter_rows, query_tabular_data, and search_rows.\n"
                 "4. If a previous tool error says a requested column is missing on the current sheet and suggests candidate sheets, switch to one of those candidate sheets immediately.\n"
                 "5. For account/category lookup questions at a specific period or metric, use lookup_value first. Provide lookup_column, lookup_value, and target_column.\n"
                 "6. If lookup_value is not sufficient, use search_rows, filter_rows, or query_tabular_data on the relevant label or text columns, then read the requested period or target column.\n"
@@ -4540,7 +4636,7 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
                 "17. When the question asks for grouped results for each entity or category and a cross-sheet bridge plan or relationship hint is available, use the reference worksheet to identify the canonical entities or categories and the fact worksheet to compute the metric. Do not answer 'each X' by grouping a yes/no, boolean, or membership-flag column unless the user explicitly asked about that flag.\n"
                 "18. When the question asks for rows satisfying multiple conditions, prefer one combined query_expression using and/or instead of separate broad queries that you plan to intersect later.\n"
                 "19. Batch multiple independent function calls in a SINGLE response whenever possible.\n"
-                "20. Keep max_rows as small as possible. Only increase it when the user explicitly asked for an exhaustive row list or export, or when the full matching row context is required and the cohort is modest; otherwise return total_matches plus representative rows. If a prior result reports total_matches > returned_rows or distinct_count > returned_values for a full-list question, rerun with a higher max_rows or max_values before answering.\n"
+                "20. Keep max_rows as small as possible. Only increase it when the user explicitly asked for an exhaustive row list or export, or when the full matching row context is required and the cohort is modest; otherwise return total_matches plus representative rows. If a prior result reports total_matches > returned_rows or distinct_count > returned_values for a full-list question, rerun with a higher max_rows or max_values before answering. When raising max_rows to retrieve a large number of rows for a CSV, list, or export request, also set return_columns to only the columns the user explicitly requested (e.g., return_columns='identifier,name') — never return all columns when the user named specific fields, as this keeps data volume manageable and avoids synthesis failures on large datasets. When the user asks for long-text columns such as 'discussion', 'control_text', 'description', 'notes', or similar for a LARGE number of rows (more than ~50), use start_row/max_rows pagination in chunks of at most 50 rows and set return_columns to only the needed columns (e.g., return_columns='identifier,discussion'). Also note: if a prior result includes an 'auto_excluded_columns' field, the plugin automatically dropped those heavy columns to protect context size — re-call with return_columns explicitly naming the columns you need (including the excluded ones) and use pagination. The return_columns parameter is supported by filter_rows, query_tabular_data, and search_rows.\n"
                 "21. For analytical questions, prefer deterministic counts plus lookup/filter/query/grouped computations over raw row or preview output.\n"
                 "22. For identifier-based workbook questions, locate the identifier on the correct sheet before explaining downstream calculations.\n"
                 "23. For peak, busiest, highest, or lowest questions, use grouped functions and inspect the highest_group, highest_value, lowest_group, and lowest_value summary fields.\n"
@@ -5430,7 +5526,11 @@ async def run_tabular_analysis_with_multi_file_support(user_question, tabular_fi
                                                        source_hint='workspace', group_id=None,
                                                        public_workspace_id=None,
                                                        execution_mode='analysis',
-                                                       tabular_file_contexts=None):
+                                                       tabular_file_contexts=None,
+                                                       gpt_endpoint=None,
+                                                       gpt_api_version=None,
+                                                       gpt_auth=None,
+                                                       gpt_provider=None):
     """Run deterministic multi-file helpers first, then fall back to the SK planner."""
     analysis_file_contexts = normalize_tabular_file_contexts_for_analysis(
         tabular_filenames=tabular_filenames,
@@ -5475,6 +5575,10 @@ async def run_tabular_analysis_with_multi_file_support(user_question, tabular_fi
         group_id=group_id,
         public_workspace_id=public_workspace_id,
         execution_mode=execution_mode,
+        gpt_endpoint=gpt_endpoint,
+        gpt_api_version=gpt_api_version,
+        gpt_auth=gpt_auth,
+        gpt_provider=gpt_provider,
     )
 
 
@@ -7646,6 +7750,10 @@ def register_route_backend_chats(app):
                     group_id=effective_active_group_id if tabular_source_hint == 'group' else None,
                     public_workspace_id=effective_active_public_workspace_id if tabular_source_hint == 'public' else None,
                     execution_mode=tabular_execution_mode,
+                    gpt_endpoint=gpt_endpoint,
+                    gpt_api_version=gpt_api_version,
+                    gpt_auth=gpt_auth,
+                    gpt_provider=gpt_provider,
                 ))
                 tabular_invocations = get_new_plugin_invocations(
                     plugin_logger.get_invocations_for_conversation(user_id, conversation_id, limit=1000),
@@ -7830,6 +7938,10 @@ def register_route_backend_chats(app):
                         settings=settings,
                         source_hint="chat",
                         execution_mode=chat_tabular_execution_mode,
+                        gpt_endpoint=gpt_endpoint,
+                        gpt_api_version=gpt_api_version,
+                        gpt_auth=gpt_auth,
+                        gpt_provider=gpt_provider,
                     ))
                     chat_tabular_invocations = get_new_plugin_invocations(
                         plugin_logger.get_invocations_for_conversation(user_id, conversation_id, limit=1000),
@@ -10110,6 +10222,10 @@ def register_route_backend_chats(app):
                         group_id=effective_active_group_id if tabular_source_hint == 'group' else None,
                         public_workspace_id=effective_active_public_workspace_id if tabular_source_hint == 'public' else None,
                         execution_mode=tabular_execution_mode,
+                        gpt_endpoint=gpt_endpoint,
+                        gpt_api_version=gpt_api_version,
+                        gpt_auth=gpt_auth,
+                        gpt_provider=gpt_provider,
                     ))
                     tabular_invocations = get_new_plugin_invocations(
                         plugin_logger.get_invocations_for_conversation(user_id, conversation_id, limit=1000),
@@ -10270,6 +10386,10 @@ def register_route_backend_chats(app):
                             settings=settings,
                             source_hint="chat",
                             execution_mode=chat_tabular_execution_mode,
+                            gpt_endpoint=gpt_endpoint,
+                            gpt_api_version=gpt_api_version,
+                            gpt_auth=gpt_auth,
+                            gpt_provider=gpt_provider,
                         ))
                         chat_tabular_invocations = get_new_plugin_invocations(
                             plugin_logger.get_invocations_for_conversation(user_id, conversation_id, limit=1000),
