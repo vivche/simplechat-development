@@ -86,16 +86,18 @@ class DatabricksTablePlugin(BasePlugin):
     )
     async def query_table(
         self,
-        columns: Annotated[Optional[List[str]], "List of columns to select from the table. If not provided, all columns will be selected."] = None,
-        warehouse_id: Annotated[Optional[str], "Databricks warehouse ID to use for the query. Obtained from self.warehouse_id if not provided."] = None,
+        columns: Annotated[str, "Comma-separated list of columns to select from the table. If not provided, all columns will be selected."] = "",
+        warehouse_id: Annotated[str, "Databricks warehouse ID to use for the query. Obtained from self.warehouse_id if not provided."] = "",
         **filters: Annotated[str, "Additional filters to apply as column=value pairs."]
     ) -> Annotated[ResultWithMetadata, "The query result as a dictionary or list (Databricks SQL API response), always with a .metadata attribute."]:
     
         # Determine columns to select
-        if columns is None:
+        parsed_columns = [c.strip() for c in columns.split(',') if c.strip()] if columns else None
+        resolved_warehouse_id_param = warehouse_id or None
+        if parsed_columns is None:
             select_cols = self.columns
         else:
-            select_cols = columns
+            select_cols = parsed_columns
         # Validate columns
         for col in select_cols:
             if col not in self.columns:
@@ -117,7 +119,7 @@ class DatabricksTablePlugin(BasePlugin):
             'Content-Type': 'application/json'
         }
         # Prefer argument, then self.warehouse_id, then filters
-        resolved_warehouse_id = warehouse_id or getattr(self, 'warehouse_id', None) or filters.get("warehouse_id", "")
+        resolved_warehouse_id = resolved_warehouse_id_param or getattr(self, 'warehouse_id', None) or filters.get("warehouse_id", "")
         data = {
             "statement": sql,
             "warehouse_id": resolved_warehouse_id
