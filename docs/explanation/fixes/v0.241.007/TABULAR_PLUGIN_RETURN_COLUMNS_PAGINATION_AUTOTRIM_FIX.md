@@ -1,6 +1,7 @@
 # Tabular Processing Plugin — Return Columns, Pagination & Auto-Trim Fix
 
-**Version:** v0.241.014  
+Fixed/Implemented in version: **0.241.007**
+
 **File:** `application/single_app/semantic_kernel_plugins/tabular_processing_plugin.py`
 
 ## Issue Description
@@ -179,6 +180,83 @@ $$1{,}189 \div 50 = 24 \text{ pages}$$
 That requires 24 calls — far beyond the 7–8 cap. The inner loop can page through a handful of chunks, but it **cannot autonomously exhaust a large result set in a single pass**. For bulk exports the user must ask in multiple follow-up messages, or a future enhancement would need to run `run_tabular_sk_analysis` in an outer loop at the orchestration layer.
 
 The `auto_excluded_columns` hint in the plugin response and prompt instruction #20 encourage the inner loop to use pagination proactively when long-text columns are requested, but the call-count ceiling remains the binding constraint for very large datasets.
+
+---
+
+---
+
+## Additional Bug Fix — SK `Optional[str]` Parameter Parsing (v0.241.015)
+
+**Applies to:** All three branches carrying this fix — `fix/tabular-plugin-return-columns-pagination-autotrim`, `fix/tabular-sk-multi-endpoint-deployment-not-found`, `feature/tabular-plugin-gpt51-redesign`
+
+### Issue Description
+
+After deploying on Python 3.13, every `@kernel_function` call involving an optional string parameter (e.g. `sheet_name`, `filter_column`, `query_expression`) raised:
+
+```
+FunctionExecutionException: Parameter sheet_name is expected to be parsed to typing.Optional[str] but is not.
+```
+
+The analysis, aggregation, and filtering operations all failed silently. The outer model received no data.
+
+### Root Cause
+
+Semantic Kernel's `kernel_function_from_method.py` coerces LLM-supplied parameter values by calling `param_type(value)` at runtime. When the annotation is `Annotated[Optional[str], "..."]`, the resolved `param_type` is `typing.Union[str, None]`. Python's `typing.Union` does not support direct instantiation:
+
+```python
+typing.Optional[str]("Sheet1")   # → TypeError: Cannot instantiate typing.Union
+```
+
+SK wraps this as a `FunctionExecutionException`, aborting the call before the function body ever runs.
+
+### Full Traceback Path
+
+```
+kernel_function.py:invoke
+  → kernel_function_from_method.py:_invoke_internal
+      → gather_function_parameters
+          → _parse_parameter
+              → param_type(value)   # param_type = typing.Optional[str]
+                  → TypeError: Cannot instantiate typing.Union
+```
+
+### Before the Fix
+
+**Before (broken):**
+1. LLM calls e.g. `query_tabular_data(sheet_name="Sheet1", ...)`
+2. SK tries `Optional[str]("Sheet1")` → crashes: `TypeError: Cannot instantiate typing.Union`
+3. Function **never runs** — caller receives `FunctionExecutionException`
+4. No data returned; mini-agent synthesis fails
+
+### After the Fix
+
+**After (working):**
+1. LLM calls `query_tabular_data(sheet_name="Sheet1", ...)`
+2. SK parses `str("Sheet1")` → `"Sheet1"` — succeeds trivially
+3. Function runs with the **actual sheet name** passed through
+4. Body executes `(sheet_name or '').strip()` → `"Sheet1"` → forwarded to `_resolve_sheet_selection()`
+5. Correct sheet is loaded and data is returned
+
+**If the LLM omits an optional parameter** (e.g. single-sheet CSV where no sheet name is needed):
+- The `= None` default is used directly — SK never calls `param_type()` on a default
+- Body: `(None or '').strip()` → `''` → falls through to auto-select the first sheet
+
+### Fix Applied
+
+Replaced all `Annotated[Optional[str], "..."] = None` with `Annotated[str, "..."] = None` in every `@kernel_function` method signature:
+
+| File | Occurrences changed |
+|------|-------------------|
+| `tabular_processing_plugin.py` | 90–92 |
+| `databricks_table_plugin.py` | 2 |
+
+Function bodies were **not changed** — they already used `(param or '').strip()` / `(param or None)` patterns that handle both `None` and empty string `""` identically.
+
+### Backward Compatibility
+
+- Valid on Python 3.9+ (SK itself requires 3.10+)
+- `Optional[str]` is retained for all non-`@kernel_function` internal helper methods (e.g. `_resolve_sheet_selection`, `_match_workbook_sheet_name`) — only the SK-facing public signatures were changed
+- `Union.__call__` has never been callable in any Python version, so this bug affected Python 3.10–3.13 equally; the fix is version-neutral
 
 ---
 

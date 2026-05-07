@@ -1,5 +1,7 @@
 # Tabular SK Analysis — Multi-Endpoint DeploymentNotFound Fix
 
+Fixed/Implemented in version: **0.241.007**
+
 ## Issue Description
 
 When a user uploaded a tabular file (CSV or XLSX) and asked a question about its contents, the AI returned only 3–5 preview rows instead of performing a full analysis. The response looked like:
