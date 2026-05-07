@@ -260,6 +260,66 @@ Function bodies were **not changed** — they already used `(param or '').strip(
 
 ---
 
+## Why Does the UI Only Display Partial Results?
+
+Even when all bugs described in this document are fixed, users may still see **incomplete output** (e.g. a list of 400–500 rows when the file has 1,189). This is expected behaviour caused by the interaction between the SK auto-invoke cap and the plugin's per-call pagination limit. It is not a crash — the mini-agent simply runs out of allowed tool calls before it can fetch all pages.
+
+### The three numbers that matter
+
+| Constraint | Value | Where set |
+|---|---|---|
+| Rows returned per plugin call | 100 (default `max_rows`) | `tabular_processing_plugin.py` parameter default |
+| Max tool calls per analysis pass (Auto mode) | 7 | `route_backend_chats.py` line ~4696 |
+| Max tool calls per analysis pass (Required mode) | 8 | `route_backend_chats.py` line ~4691 |
+
+### What actually happens (NIST SP 800-53 example)
+
+A user asks: *"Give me a CSV table of all security control identifiers and names."*  
+The file has **1,189 rows** across one sheet. The mini-agent:
+
+| Call # | Plugin function | Rows fetched | Cumulative rows |
+|--------|----------------|-------------|-----------------|
+| 1 | `list_tabular_files` | — | 0 |
+| 2 | `describe_tabular_file` | — | 0 |
+| 3 | `filter_rows` / `query_tabular_data` — page 1 (`start_row=0`) | 100 | 100 |
+| 4 | page 2 (`start_row=100`) | 100 | 200 |
+| 5 | page 3 (`start_row=200`) | 100 | 300 |
+| 6 | page 4 (`start_row=300`) | 100 | 400 |
+| 7 | page 5 (`start_row=400`) | 100 | 500 |
+| **cap hit** | SK forces synthesis | — | **500 of 1,189 fetched** |
+
+SK's `maximum_auto_invoke_attempts` is exhausted. The model is forced to write its final answer using only the ~500 rows it has seen. The remaining 689 rows are never requested.
+
+A full pass at 100 rows per page would require **≥ 12 data calls** (plus 2 overhead calls), totalling 14 — nearly **double** the allowed cap.
+
+### Why the cap exists
+
+The cap prevents runaway loops where a confused model calls the same tool indefinitely. It is intentional. The fix tradeoffs are:
+
+| Approach | Effect | Risk |
+|---|---|---|
+| Raise the cap (`7/8` → `15`) | More pages fetched in one pass | Longer response time; higher token cost per turn |
+| Raise `max_rows` per call (`100` → `500`) | Fewer calls needed for the same data | Larger per-call payloads; auto-trim may fire earlier |
+| Both together | Covers most large-file exports in a single pass | Both risks apply |
+| Multi-turn pagination | User issues follow-up messages to continue | No code change needed; user burden increases |
+| Orchestration-layer outer loop | `run_tabular_sk_analysis` is called repeatedly until `has_more` is `false` | Most robust; most invasive change |
+
+### Recommended workaround (no code change required)
+
+Ask the question in smaller, explicit slices:
+
+> *"Give me rows 1–100 of all security control identifiers and names."*  
+> *"Continue from row 101."*  
+> *"Continue from row 201."* … and so on.
+
+Each turn resets the auto-invoke counter, giving the mini-agent a fresh set of 7–8 calls for that slice.
+
+### Permanent fix (future work)
+
+The cleanest long-term solution is to wrap `run_tabular_sk_analysis` in an outer pagination loop at the `route_backend_chats.py` level — calling it repeatedly until the plugin signals `has_more: false`, then concatenating all results before returning to the outer model. This bypasses the per-pass cap entirely and is transparent to the user.
+
+---
+
 ## Related
 
 - Multi-endpoint DeploymentNotFound fix: `TABULAR_SK_MULTI_ENDPOINT_DEPLOYMENT_NOT_FOUND_FIX.md`
