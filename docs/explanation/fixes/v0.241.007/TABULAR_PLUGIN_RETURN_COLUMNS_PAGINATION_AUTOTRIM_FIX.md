@@ -1,6 +1,7 @@
 # Tabular Processing Plugin — Return Columns, Pagination & Auto-Trim Fix
 
-**Version:** v0.241.014  
+Fixed/Implemented in version: **0.241.007**
+
 **File:** `application/single_app/semantic_kernel_plugins/tabular_processing_plugin.py`
 
 ## Issue Description
@@ -179,6 +180,158 @@ $$1{,}189 \div 50 = 24 \text{ pages}$$
 That requires 24 calls — far beyond the 7–8 cap. The inner loop can page through a handful of chunks, but it **cannot autonomously exhaust a large result set in a single pass**. For bulk exports the user must ask in multiple follow-up messages, or a future enhancement would need to run `run_tabular_sk_analysis` in an outer loop at the orchestration layer.
 
 The `auto_excluded_columns` hint in the plugin response and prompt instruction #20 encourage the inner loop to use pagination proactively when long-text columns are requested, but the call-count ceiling remains the binding constraint for very large datasets.
+
+---
+
+---
+
+## Additional Bug Fix — SK `Optional[str]` Parameter Parsing (v0.241.015)
+
+**Applies to:** All three branches carrying this fix — `fix/tabular-plugin-return-columns-pagination-autotrim`, `fix/tabular-sk-multi-endpoint-deployment-not-found`, `feature/tabular-plugin-gpt51-redesign`
+
+### Issue Description
+
+After deploying on Python 3.13, every `@kernel_function` call involving an optional string parameter (e.g. `sheet_name`, `filter_column`, `query_expression`) raised:
+
+```
+FunctionExecutionException: Parameter sheet_name is expected to be parsed to typing.Optional[str] but is not.
+```
+
+The analysis, aggregation, and filtering operations all failed silently. The outer model received no data.
+
+### Root Cause
+
+Semantic Kernel's `kernel_function_from_method.py` coerces LLM-supplied parameter values by calling `param_type(value)` at runtime. When the annotation is `Annotated[Optional[str], "..."]`, the resolved `param_type` is `typing.Union[str, None]`. Python's `typing.Union` does not support direct instantiation:
+
+```python
+typing.Optional[str]("Sheet1")   # → TypeError: Cannot instantiate typing.Union
+```
+
+SK wraps this as a `FunctionExecutionException`, aborting the call before the function body ever runs.
+
+### Full Traceback Path
+
+```
+kernel_function.py:invoke
+  → kernel_function_from_method.py:_invoke_internal
+      → gather_function_parameters
+          → _parse_parameter
+              → param_type(value)   # param_type = typing.Optional[str]
+                  → TypeError: Cannot instantiate typing.Union
+```
+
+### Before the Fix
+
+**Before (broken):**
+1. LLM calls e.g. `query_tabular_data(sheet_name="Sheet1", ...)`
+2. SK tries `Optional[str]("Sheet1")` → crashes: `TypeError: Cannot instantiate typing.Union`
+3. Function **never runs** — caller receives `FunctionExecutionException`
+4. No data returned; mini-agent synthesis fails
+
+### After the Fix
+
+**After (working):**
+1. LLM calls `query_tabular_data(sheet_name="Sheet1", ...)`
+2. SK parses `str("Sheet1")` → `"Sheet1"` — succeeds trivially
+3. Function runs with the **actual sheet name** passed through
+4. Body executes `(sheet_name or '').strip()` → `"Sheet1"` → forwarded to `_resolve_sheet_selection()`
+5. Correct sheet is loaded and data is returned
+
+**If the LLM omits an optional parameter** (e.g. single-sheet CSV where no sheet name is needed):
+- The `= None` default is used directly — SK never calls `param_type()` on a default
+- Body: `(None or '').strip()` → `''` → falls through to auto-select the first sheet
+
+### Fix Applied
+
+Replaced all `Annotated[Optional[str], "..."] = None` with `Annotated[str, "..."] = None` in every `@kernel_function` method signature:
+
+| File | Occurrences changed |
+|------|-------------------|
+| `tabular_processing_plugin.py` | 90–92 |
+| `databricks_table_plugin.py` | 2 |
+
+Function bodies were **not changed** — they already used `(param or '').strip()` / `(param or None)` patterns that handle both `None` and empty string `""` identically.
+
+### Backward Compatibility
+
+- Valid on Python 3.9+ (SK itself requires 3.10+)
+- `Optional[str]` is retained for all non-`@kernel_function` internal helper methods (e.g. `_resolve_sheet_selection`, `_match_workbook_sheet_name`) — only the SK-facing public signatures were changed
+- `Union.__call__` has never been callable in any Python version, so this bug affected Python 3.10–3.13 equally; the fix is version-neutral
+
+---
+
+## Why Does the UI Only Display Partial Results?
+
+Users may see **incomplete output** (e.g. only part of a 1,189-row dataset) for one of two distinct reasons. Testing with the NIST SP 800-53 dataset confirmed which one is actually binding.
+
+### Constraint 1 — SK auto-invoke cap (tool call limit)
+
+| Constraint | Value | Where set |
+|---|---|---|
+| Rows returned per plugin call | 100 (default `max_rows`) | `tabular_processing_plugin.py` parameter default |
+| Max tool calls per analysis pass (Auto mode) | 7 | `route_backend_chats.py` `FunctionChoiceBehavior.Auto` |
+| Max tool calls per analysis pass (Required mode) | 8 | `route_backend_chats.py` `FunctionChoiceBehavior.Required` |
+
+**When this is the bottleneck:** The LLM pages at the default 100 rows/call. A 1,189-row file needs ≥ 12 data calls + 2 overhead = 14 total — almost double the 7–8 cap. SK forces a final answer after call 7 or 8, leaving the remaining rows unfetched.
+
+The cap exists to prevent runaway tool-call loops. It is intentional.
+
+### Constraint 2 — Analysis truncation guard (character limit) ← **actual root cause for CSV export requests**
+
+After `get_chat_message_contents()` returns, `run_tabular_sk_analysis` applies a hard character cap to the synthesised text:
+
+```python
+# route_backend_chats.py
+if len(analysis) > 100000:
+    analysis = analysis[:100000] + "\n[Analysis truncated]"
+```
+
+This guard was **originally set to 20,000 characters**. A full NIST SP 800-53 two-column CSV (identifier + name, 1,189 rows) serialises to approximately 70,000–80,000 characters — well above the old 20,000-char limit but below the updated 100,000-char limit.
+
+### What actually happened (NIST SP 800-53 test, confirmed from logs)
+
+A user asked: *"Give me a CSV table of all security control identifiers and names."*
+
+| Call # | Plugin function | What happened |
+|--------|----------------|----------------|
+| 1 | `get_distinct_values` | Confirmed 1,189 unique identifiers |
+| 2 | `query_tabular_data(max_rows=1500)` | Fetched **all 1,189 rows** in one call |
+| — | SK synthesis | Produced ~75,000-char CSV string |
+| — | Truncation guard (old: 20,000 chars) | **Cut output at ~300 rows** — this was the failure |
+
+**The SK cap was never the bottleneck.** The LLM read the schema context (which states "1189 rows") and the user's explicit "all" request, then correctly chose `max_rows=1500` in a single call. The data was fully fetched in 2 tool calls. The truncation happened silently *after* SK returned the complete answer.
+
+**Fix applied (v0.241.007):** Raised the truncation guard from 20,000 → **100,000 characters** in `run_tabular_sk_analysis`. This covers any two-column export of up to ~1,600 rows and any typical analytical summary.
+
+### When the SK cap *does* become the bottleneck
+
+The cap matters when:
+- The LLM does not know the row count upfront (no pre-loaded schema)
+- The LLM defaults to `max_rows=100` and pages incrementally
+- The dataset requires more than 5–6 data calls at 100 rows each
+
+In those cases the workaround options are:
+
+| Approach | Effect | Risk |
+|---|---|---|
+| Raise `max_rows` per call (`100` → `500+`) | Fewer calls needed for the same data | Larger per-call payloads; auto-trim may fire earlier |
+| Raise the cap (`7/8` → higher) | More pages fetched in one pass | Longer response time; higher token cost per turn |
+| Multi-turn pagination | User issues follow-up messages to continue | No code change needed; user burden increases |
+| Orchestration-layer outer loop | `run_tabular_sk_analysis` called repeatedly until `has_more: false` | Most robust; most invasive change |
+
+### Recommended workaround for very large exports (no code change required)
+
+Ask the question in smaller explicit slices:
+
+> *"Give me rows 1–100 of all security control identifiers and names."*  
+> *"Continue from row 101."*  
+> *"Continue from row 201."* … and so on.
+
+Each turn resets the auto-invoke counter, giving the mini-agent a fresh set of 7–8 calls for that slice.
+
+### Permanent fix for the cap limitation (future work)
+
+The cleanest long-term solution is to wrap `run_tabular_sk_analysis` in an outer pagination loop at the `route_backend_chats.py` level — calling it repeatedly until the plugin signals `has_more: false`, then concatenating all results before returning to the outer model. This bypasses the per-pass cap entirely and is transparent to the user.
 
 ---
 
