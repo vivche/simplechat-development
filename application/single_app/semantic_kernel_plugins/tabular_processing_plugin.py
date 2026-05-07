@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import re
+import time
 import warnings
 import pandas
 from typing import Annotated, Dict, List, Optional, Set
@@ -50,6 +51,9 @@ class TabularProcessingPlugin:
         'count_rows_by_related_values',
         'group_by_aggregate',
         'group_by_datetime_component',
+    )
+    PANDAS_FUNCTION_NAMES = (
+        'execute_pandas',
     )
     THOUGHT_EXCLUDED_PARAMETER_NAMES = (
         'user_id',
@@ -123,6 +127,11 @@ class TabularProcessingPlugin:
     def get_analysis_function_names(cls):
         """Return analytical kernel function names exposed by the plugin."""
         return cls.ANALYSIS_FUNCTION_NAMES
+
+    @classmethod
+    def get_pandas_function_names(cls):
+        """Return pandas-mode kernel function names exposed by the plugin."""
+        return cls.PANDAS_FUNCTION_NAMES
 
     @classmethod
     def get_thought_excluded_parameter_names(cls):
@@ -4481,3 +4490,150 @@ class TabularProcessingPlugin:
                 log_event(f"[TabularProcessingPlugin] Error in datetime component grouping: {e}", level=logging.WARNING)
                 return json.dumps({"error": str(e)})
         return await asyncio.to_thread(_sync_work)
+
+    @kernel_function(
+        description=(
+            "Execute a single pandas Python expression against the loaded tabular data. "
+            "Use 'df' to reference the DataFrame of the requested sheet (or the only sheet for CSV/single-sheet files). "
+            "For multi-sheet workbooks, 'sheets' is a dict mapping sheet names to DataFrames — "
+            "e.g. sheets['Sheet1']. "
+            "The expression must be a single evaluatable Python expression, not a block of statements. "
+            "To paginate, use df.iloc[start:end]. "
+            "Available names in scope: df, sheets (dict), pd (pandas), re. "
+            "Returns the result serialised as JSON."
+        ),
+    )
+    async def execute_pandas(
+        self,
+        filename: Annotated[str, "The tabular filename to analyse."],
+        code: Annotated[str, "A single evaluatable pandas Python expression. Examples: df.groupby('Region')['Sales'].sum().reset_index()  |  sheets['Summary'][['Name','Total']].head(20)"],
+        sheet_name: Annotated[str, "Optional sheet name for multi-sheet workbooks. Leave blank for single-sheet files or to use the default sheet."] = "",
+        source: Annotated[str, "The file source: 'workspace', 'chat', 'group', or 'public'."] = "",
+        user_id: Annotated[str, "The user ID."] = "",
+        conversation_id: Annotated[str, "The conversation ID."] = "",
+        group_id: Annotated[str, "The group ID (for group files)."] = "",
+        public_workspace_id: Annotated[str, "The public workspace ID (for public files)."] = "",
+    ) -> str:
+        log_event(
+            "[execute_pandas] Invoked",
+            level=logging.DEBUG,
+            extra={
+                'user_id': user_id,
+                'conversation_id': conversation_id,
+                'filename': filename,
+                'sheet_name': sheet_name or None,
+                'code': code[:200],
+                'source': source,
+            },
+        )
+
+        FORBIDDEN_PATTERNS = (
+            'import ', '__', 'open(', 'exec(', 'eval(', 'compile(',
+            'subprocess', 'os.', 'sys.', 'globals(', 'locals(',
+            'getattr(', 'setattr(', 'delattr(', '__import__', 'breakpoint(',
+            'input(', 'exit(', 'quit(',
+        )
+
+        def _sync_work():
+            for pattern in FORBIDDEN_PATTERNS:
+                if pattern in code:
+                    return json.dumps({
+                        "error": f"Forbidden pattern '{pattern}' is not allowed in execute_pandas code.",
+                    })
+
+            container, blob_path = self._resolve_blob_location_with_fallback(
+                user_id, conversation_id, filename, source, group_id, public_workspace_id,
+            )
+
+            workbook_metadata = self._get_workbook_metadata(container, blob_path)
+            is_workbook = workbook_metadata.get('is_workbook', False)
+            sheet_names = workbook_metadata.get('sheet_names', [])
+
+            # Load primary DataFrame (requested or default sheet)
+            df = self._read_tabular_blob_to_dataframe(
+                container, blob_path,
+                sheet_name=sheet_name or None,
+            )
+            df = self._try_numeric_conversion(df)
+
+            # Build sheets dict for multi-sheet workbooks
+            if is_workbook and sheet_names:
+                sheets = {}
+                for sname in sheet_names:
+                    try:
+                        sdf = self._read_tabular_blob_to_dataframe(container, blob_path, sheet_name=sname)
+                        sheets[sname] = self._try_numeric_conversion(sdf)
+                    except Exception:
+                        pass
+            else:
+                sheets = {'default': df}
+
+            safe_builtins = {
+                'len': len, 'int': int, 'float': float, 'str': str, 'bool': bool,
+                'list': list, 'dict': dict, 'tuple': tuple, 'set': set,
+                'range': range, 'enumerate': enumerate, 'zip': zip,
+                'sorted': sorted, 'reversed': reversed, 'sum': sum,
+                'min': min, 'max': max, 'abs': abs, 'round': round,
+                'isinstance': isinstance, 'True': True, 'False': False, 'None': None,
+            }
+            safe_globals = {'__builtins__': safe_builtins}
+            safe_locals = {'df': df, 'sheets': sheets, 'pd': pandas, 're': re}
+
+            try:
+                result = eval(code, safe_globals, safe_locals)  # noqa: S307
+            except Exception as e:
+                return json.dumps({"error": f"Execution error: {str(e)}", "code": code})
+
+            selected_sheet = None
+            if is_workbook:
+                default_sheet = workbook_metadata.get('default_sheet')
+                selected_sheet = sheet_name if sheet_name else default_sheet
+
+            if isinstance(result, pandas.DataFrame):
+                trimmed_df, excluded_columns = self._auto_trim_df_for_output(result)
+                records = trimmed_df.to_dict(orient='records')
+                return json.dumps({
+                    "filename": filename,
+                    "selected_sheet": selected_sheet,
+                    "row_count": len(result),
+                    "returned_rows": len(trimmed_df),
+                    "has_more": len(trimmed_df) < len(result),
+                    "auto_excluded_columns": excluded_columns if excluded_columns else None,
+                    "result": records,
+                }, indent=2, default=str)
+            elif isinstance(result, pandas.Series):
+                return json.dumps({
+                    "filename": filename,
+                    "selected_sheet": selected_sheet,
+                    "result": result.to_dict(),
+                }, indent=2, default=str)
+            else:
+                return json.dumps({
+                    "filename": filename,
+                    "selected_sheet": selected_sheet,
+                    "result": result,
+                }, indent=2, default=str)
+
+        _exec_start = time.time()
+        try:
+            result_json = await asyncio.wait_for(asyncio.to_thread(_sync_work), timeout=15.0)
+            _exec_duration = round(time.time() - _exec_start, 3)
+            log_event(
+                f"[execute_pandas] Completed in {_exec_duration}s",
+                level=logging.DEBUG,
+                extra={
+                    'user_id': user_id,
+                    'conversation_id': conversation_id,
+                    'filename': filename,
+                    'duration_s': _exec_duration,
+                    'code': code[:200],
+                },
+            )
+            return result_json
+        except asyncio.TimeoutError:
+            return json.dumps({
+                "error": "execute_pandas timed out after 15 seconds. Simplify the expression or use df.iloc[start:end] for pagination.",
+            })
+        except Exception as e:
+            log_event(f"[TabularProcessingPlugin] execute_pandas error: {e}", level=logging.WARNING)
+            return json.dumps({"error": str(e)})

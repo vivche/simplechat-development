@@ -716,6 +716,18 @@ def get_tabular_analysis_function_names():
     return TabularProcessingPlugin.get_analysis_function_names()
 
 
+def get_tabular_pandas_function_names():
+    """Return pandas-mode tabular function names from the plugin."""
+    from semantic_kernel_plugins.tabular_processing_plugin import TabularProcessingPlugin
+
+    return TabularProcessingPlugin.get_pandas_function_names()
+
+
+def _is_pandas_mode_model(gpt_model: str) -> bool:
+    """Return True when the model is gpt-5 family and should use execute_pandas."""
+    return 'gpt-5' in (gpt_model or '').lower()
+
+
 def get_tabular_thought_excluded_parameter_names():
     """Return tabular parameter names hidden from thought details."""
     from semantic_kernel_plugins.tabular_processing_plugin import TabularProcessingPlugin
@@ -4328,8 +4340,11 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
 
         schema_context = "\n".join(schema_parts)
         allow_multi_sheet_discovery = has_multi_sheet_workbook and not schema_summary_mode
+        pandas_mode = _is_pandas_mode_model(gpt_model) and not schema_summary_mode
         allowed_function_names = ['describe_tabular_file'] if schema_summary_mode else sorted(get_tabular_analysis_function_names())
-        if allow_multi_sheet_discovery:
+        if pandas_mode:
+            allowed_function_names = ['describe_tabular_file', 'execute_pandas']
+        elif allow_multi_sheet_discovery:
             allowed_function_names = ['describe_tabular_file'] + allowed_function_names
         allowed_function_filters = {
             'included_functions': [
@@ -4340,6 +4355,43 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
 
         def build_system_prompt(force_tool_use=False, tool_error_messages=None,
                                 execution_gap_messages=None, discovery_feedback_messages=None):
+            if pandas_mode:
+                retry_prefix = ""
+                if force_tool_use:
+                    retry_prefix = (
+                        "RETRY MODE: Your previous attempt did not call execute_pandas. "
+                        "You MUST call execute_pandas before writing any answer text.\n\n"
+                    )
+                tool_error_feedback = ""
+                if tool_error_messages:
+                    rendered_errors = "\n".join(f"- {e}" for e in tool_error_messages)
+                    tool_error_feedback = (
+                        "PREVIOUS ERRORS:\n"
+                        f"{rendered_errors}\n"
+                        "Correct the expression and try again.\n\n"
+                    )
+                return (
+                    "You are a data analyst with direct pandas access to the full dataset. "
+                    "Use execute_pandas to run a single pandas expression against the data. "
+                    "You MUST call execute_pandas before answering. Never answer from schema alone.\n\n"
+                    f"{retry_prefix}"
+                    f"{tool_error_feedback}"
+                    f"FILE SCHEMAS:\n"
+                    f"{schema_context}\n\n"
+                    f"AVAILABLE FUNCTIONS: {', '.join(allowed_function_names)}.\n\n"
+                    "IMPORTANT:\n"
+                    "1. Use the source_context from FILE SCHEMAS when calling execute_pandas.\n"
+                    "2. 'df' refers to the DataFrame of the requested (or default) sheet. "
+                    "For multi-sheet workbooks, 'sheets' is a dict mapping sheet names to DataFrames: sheets['SheetName'].\n"
+                    "3. To paginate large results, include df.iloc[start:end] in the code expression.\n"
+                    "4. For schema discovery on an unfamiliar workbook, call describe_tabular_file first, then execute_pandas.\n"
+                    "5. Write a single evaluatable Python expression — not a block of statements.\n"
+                    "6. Use pd (pandas) and re (regex module) in expressions as needed.\n"
+                    "7. Columns are already numeric where the data allows — apply arithmetic directly.\n"
+                    "8. If a result includes 'has_more: true', paginate with df.iloc[N:N+100] to retrieve more rows.\n"
+                    "9. Do not mention hypothetical follow-up analyses or failed attempts unless the user explicitly asked.\n"
+                    "10. For queries requesting all rows or a complete list, do NOT use .head(), .tail(), or .iloc[] — use the full column selection directly (e.g., df[['col1','col2']])."
+                )
             if schema_summary_mode:
                 retry_prefix = ""
                 if force_tool_use:
@@ -4661,7 +4713,129 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
         _analysis_start_time = time.monotonic()
 
         for attempt_number in range(1, 4):
-            force_tool_use = attempt_number > 1 or (attempt_number == 1 and analysis_requires_immediate_tool_choice)
+            force_tool_use = attempt_number > 1 or (attempt_number == 1 and (analysis_requires_immediate_tool_choice or pandas_mode))
+            log_event(
+                f"[Tabular SK Analysis] Attempt {attempt_number} | pandas_mode={pandas_mode} | force_tool_use={force_tool_use} | allowed_functions={allowed_function_names}",
+                level=logging.INFO,
+            )
+
+            # Fast path: for pandas_mode on attempt 1, skip the expensive SK
+            # tool-calling round-trip and go directly to code-gen + direct
+            # execution.  Reasoning models (e.g. gpt-5.1) frequently ignore
+            # FunctionChoiceBehavior.Required and return narrative text, burning
+            # the full LLM wait before the existing fallback triggers.
+            if pandas_mode and attempt_number == 1 and analysis_file_contexts:
+                log_event(
+                    f"[Tabular SK Analysis] Attempt {attempt_number} pandas_mode: "
+                    f"attempting code-gen + direct execution (skip SK tool round-trip)",
+                    level=logging.INFO,
+                )
+                _pf_succeeded = False
+                try:
+                    _pf_prompt_parts = [
+                        "Based on the following file schema, write a single pandas Python expression "
+                        "to answer the question.",
+                        "",
+                        f"FILE SCHEMA:\n{schema_context}",
+                        "",
+                        "Rules:",
+                        "- Return ONLY the expression — no explanation and no markdown code-block markers",
+                        "- Use 'df' for the primary/default sheet",
+                        "- For multi-sheet workbooks use sheets['SheetName'] to access other sheets",
+                        "- The expression must be a single evaluatable Python expression, not statements",
+                        "- Available names: df, sheets (dict), pd (pandas), re",
+                    ]
+                    if previous_tool_error_messages:
+                        _pf_err_lines = "\n".join(f"  - {e}" for e in previous_tool_error_messages)
+                        _pf_prompt_parts += ["", "Previous execution errors (correct these):", _pf_err_lines]
+                    _pf_user_msg = "\n".join(_pf_prompt_parts) + f"\n\nQuestion: {user_question}"
+                    _pf_history = SKChatHistory()
+                    _pf_history.add_user_message(_pf_user_msg)
+                    _pf_settings = AzureChatPromptExecutionSettings(
+                        service_id="tabular-analysis",
+                        function_choice_behavior=FunctionChoiceBehavior.NoneInvoke(),
+                    )
+                    _pf_codegen_msgs = await chat_service.get_chat_message_contents(
+                        _pf_history, _pf_settings, kernel=kernel
+                    )
+                    _pf_code = (_pf_codegen_msgs[0].content or "").strip()
+                    if _pf_code.startswith("```"):
+                        _pf_nl = _pf_code.find("\n")
+                        _pf_code = _pf_code[_pf_nl + 1:] if _pf_nl != -1 else _pf_code[3:]
+                    if _pf_code.endswith("```"):
+                        _pf_code = _pf_code[:-3]
+                    _pf_code = _pf_code.strip()
+                    log_event(
+                        f"[Tabular SK Analysis] pandas_mode fast code-gen expression: {_pf_code[:300]}",
+                        level=logging.INFO,
+                    )
+                    if _pf_code:
+                        _pf_file_ctx = analysis_file_contexts[0]
+                        _pf_exec_raw = await tabular_plugin.execute_pandas(
+                            filename=_pf_file_ctx['file_name'],
+                            code=_pf_code,
+                            source=_pf_file_ctx.get('source_hint', ''),
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                            group_id=str(_pf_file_ctx.get('group_id') or group_id or ''),
+                            public_workspace_id=str(
+                                _pf_file_ctx.get('public_workspace_id') or public_workspace_id or ''
+                            ),
+                        )
+                        _pf_exec_obj = json.loads(_pf_exec_raw) if _pf_exec_raw else {}
+                        _pf_exec_error = _pf_exec_obj.get('error')
+                        if _pf_exec_error:
+                            previous_tool_error_messages = [_pf_exec_error]
+                            log_event(
+                                f"[Tabular SK Analysis] pandas_mode fast code-gen execute_pandas failed: "
+                                f"{_pf_exec_error}",
+                                level=logging.WARNING,
+                            )
+                        else:
+                            _pf_synth_history = SKChatHistory()
+                            _pf_synth_history.add_system_message(
+                                "You are a data analyst. Answer the user's question using only "
+                                "the execution results provided. Format tables as Markdown when "
+                                "appropriate. Be concise and factual.\n\n"
+                                f"FILE SCHEMA:\n{schema_context}"
+                            )
+                            _pf_synth_history.add_user_message(
+                                f"Question: {user_question}\n\n"
+                                f"Pandas expression used: `{_pf_code}`\n\n"
+                                f"Execution result:\n{_pf_exec_raw}"
+                            )
+                            _pf_synth_settings = AzureChatPromptExecutionSettings(
+                                service_id="tabular-analysis",
+                                function_choice_behavior=FunctionChoiceBehavior.NoneInvoke(),
+                            )
+                            _pf_synth_msgs = await chat_service.get_chat_message_contents(
+                                _pf_synth_history, _pf_synth_settings, kernel=kernel
+                            )
+                            _pf_synth = (_pf_synth_msgs[0].content or "").strip()
+                            if _pf_synth:
+                                _total_elapsed = round(time.monotonic() - _analysis_start_time, 2)
+                                log_event(
+                                    f"[Tabular SK Analysis] pandas_mode fast code-gen succeeded on attempt {attempt_number} | total {_total_elapsed}s",
+                                    level=logging.INFO,
+                                    extra={'total_elapsed_seconds': _total_elapsed},
+                                )
+                                _pf_succeeded = True
+                                return _pf_synth
+                except Exception as _pf_exc:
+                    log_event(
+                        f"[Tabular SK Analysis] pandas_mode fast code-gen exception on attempt "
+                        f"{attempt_number}: {_pf_exc}",
+                        level=logging.WARNING,
+                        exceptionTraceback=True,
+                    )
+                if not _pf_succeeded:
+                    log_event(
+                        f"[Tabular SK Analysis] pandas_mode fast code-gen attempt {attempt_number} "
+                        f"did not produce a result; falling back to SK-based attempts",
+                        level=logging.WARNING,
+                    )
+                continue
+
             # 4. Build chat history with pre-loaded schemas
             chat_history = SKChatHistory()
             chat_history.add_system_message(build_system_prompt(
@@ -4824,6 +4998,31 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
                             level=logging.WARNING,
                         )
                 else:
+                    if pandas_mode:
+                        pandas_func_names = get_tabular_pandas_function_names()
+                        pandas_invocations = [
+                            inv for inv in new_invocations
+                            if getattr(inv, 'function_name', '') in pandas_func_names
+                        ]
+                        if pandas_invocations:
+                            successful_pandas = [
+                                inv for inv in pandas_invocations
+                                if not get_tabular_invocation_error_message(inv)
+                            ]
+                            if successful_pandas:
+                                log_event(
+                                    f"[Tabular SK Analysis] Analysis complete via execute_pandas on attempt {attempt_number}",
+                                    level=logging.INFO,
+                                )
+                                return analysis
+                            previous_tool_error_messages = summarize_tabular_invocation_errors(pandas_invocations)
+                            log_event(
+                                f"[Tabular SK Analysis] execute_pandas failed on attempt {attempt_number}; retrying",
+                                extra={'tool_errors': previous_tool_error_messages},
+                                level=logging.WARNING,
+                            )
+                            baseline_invocation_count = len(invocations_after)
+                            continue
                     if successful_analytical_invocations:
                         previous_tool_error_messages = []
                         previous_failed_call_parameters = []
@@ -4980,10 +5179,137 @@ async def run_tabular_sk_analysis(user_question, tabular_filenames, user_id,
                             if allow_multi_sheet_discovery else
                             []
                         )
-                        log_event(
-                            f"[Tabular SK Analysis] Attempt {attempt_number} returned narrative without tool use; retrying",
-                            level=logging.WARNING
-                        )
+                        if pandas_mode and analysis_file_contexts:
+                            # gpt-5.1 and other reasoning models may ignore FunctionChoiceBehavior.Required,
+                            # returning narrative text even when tool_choice=required is set.
+                            # Fall back: ask the model to generate a bare pandas expression via a
+                            # tool-free code-gen prompt, then execute it directly via
+                            # tabular_plugin.execute_pandas().
+                            log_event(
+                                f"[Tabular SK Analysis] Attempt {attempt_number} returned narrative without tool use "
+                                f"(pandas mode); trying code-gen + direct execution fallback",
+                                level=logging.WARNING,
+                            )
+                            codegen_succeeded = False
+                            try:
+                                codegen_prompt_parts = [
+                                    "Based on the following file schema, write a single pandas Python expression "
+                                    "to answer the question.",
+                                    "",
+                                    f"FILE SCHEMA:\n{schema_context}",
+                                    "",
+                                    "Rules:",
+                                    "- Return ONLY the expression — no explanation and no markdown code-block markers",
+                                    "- Use 'df' for the primary/default sheet",
+                                    "- For multi-sheet workbooks use sheets['SheetName'] to access other sheets",
+                                    "- The expression must be a single evaluatable Python expression, not statements",
+                                    "- Available names: df, sheets (dict), pd (pandas), re",
+                                ]
+                                if previous_tool_error_messages:
+                                    rendered_errs = "\n".join(f"  - {e}" for e in previous_tool_error_messages)
+                                    codegen_prompt_parts += [
+                                        "",
+                                        "Previous execution errors (correct these):",
+                                        rendered_errs,
+                                    ]
+                                codegen_user_msg = (
+                                    "\n".join(codegen_prompt_parts) + f"\n\nQuestion: {user_question}"
+                                )
+                                codegen_history = SKChatHistory()
+                                codegen_history.add_user_message(codegen_user_msg)
+                                codegen_settings = AzureChatPromptExecutionSettings(
+                                    service_id="tabular-analysis",
+                                    function_choice_behavior=FunctionChoiceBehavior.NoneInvoke(),
+                                )
+                                codegen_result_msgs = await chat_service.get_chat_message_contents(
+                                    codegen_history, codegen_settings, kernel=kernel
+                                )
+                                pandas_code = (codegen_result_msgs[0].content or "").strip()
+                                # Strip any markdown code-block markers the model may have added
+                                if pandas_code.startswith("```"):
+                                    first_newline = pandas_code.find("\n")
+                                    pandas_code = (
+                                        pandas_code[first_newline + 1:] if first_newline != -1 else pandas_code[3:]
+                                    )
+                                if pandas_code.endswith("```"):
+                                    pandas_code = pandas_code[:-3]
+                                pandas_code = pandas_code.strip()
+                                log_event(
+                                    f"[Tabular SK Analysis] Code-gen attempt {attempt_number} expression: "
+                                    f"{pandas_code[:300]}",
+                                    level=logging.INFO,
+                                )
+                                if pandas_code:
+                                    file_context = analysis_file_contexts[0]
+                                    execute_result_raw = await tabular_plugin.execute_pandas(
+                                        filename=file_context['file_name'],
+                                        code=pandas_code,
+                                        source=file_context.get('source_hint', ''),
+                                        user_id=user_id,
+                                        conversation_id=conversation_id,
+                                        group_id=str(file_context.get('group_id') or group_id or ''),
+                                        public_workspace_id=str(
+                                            file_context.get('public_workspace_id') or public_workspace_id or ''
+                                        ),
+                                    )
+                                    execute_result_obj = (
+                                        json.loads(execute_result_raw) if execute_result_raw else {}
+                                    )
+                                    exec_error = execute_result_obj.get('error')
+                                    if exec_error:
+                                        previous_tool_error_messages = [exec_error]
+                                        log_event(
+                                            f"[Tabular SK Analysis] Code-gen direct execute_pandas failed: "
+                                            f"{exec_error}",
+                                            level=logging.WARNING,
+                                        )
+                                    else:
+                                        synthesis_history = SKChatHistory()
+                                        synthesis_history.add_system_message(
+                                            "You are a data analyst. Answer the user's question using only "
+                                            "the execution results provided. Format tables as Markdown when "
+                                            "appropriate. Be concise and factual.\n\n"
+                                            f"FILE SCHEMA:\n{schema_context}"
+                                        )
+                                        synthesis_history.add_user_message(
+                                            f"Question: {user_question}\n\n"
+                                            f"Pandas expression used: `{pandas_code}`\n\n"
+                                            f"Execution result:\n{execute_result_raw}"
+                                        )
+                                        synthesis_settings = AzureChatPromptExecutionSettings(
+                                            service_id="tabular-analysis",
+                                            function_choice_behavior=FunctionChoiceBehavior.NoneInvoke(),
+                                        )
+                                        synthesis_msgs = await chat_service.get_chat_message_contents(
+                                            synthesis_history, synthesis_settings, kernel=kernel
+                                        )
+                                        synthesized = (synthesis_msgs[0].content or "").strip()
+                                        if synthesized:
+                                            log_event(
+                                                f"[Tabular SK Analysis] Code-gen + direct execution succeeded "
+                                                f"on attempt {attempt_number}",
+                                                level=logging.INFO,
+                                            )
+                                            codegen_succeeded = True
+                                            return synthesized
+                            except Exception as codegen_exc:
+                                log_event(
+                                    f"[Tabular SK Analysis] Code-gen fallback exception on attempt "
+                                    f"{attempt_number}: {codegen_exc}",
+                                    level=logging.WARNING,
+                                    exceptionTraceback=True,
+                                )
+                            if not codegen_succeeded:
+                                log_event(
+                                    f"[Tabular SK Analysis] Code-gen fallback did not produce a result on "
+                                    f"attempt {attempt_number}; will retry SK path",
+                                    level=logging.WARNING,
+                                )
+                        else:
+                            log_event(
+                                f"[Tabular SK Analysis] Attempt {attempt_number} returned narrative without tool use; retrying",
+                                level=logging.WARNING
+                            )
 
             else:
                 if schema_summary_mode and failed_schema_summary_invocations:
@@ -10239,6 +10565,7 @@ def register_route_backend_chats(app):
                         f"execution_mode={tabular_execution_mode} | baseline_invocations={baseline_tabular_invocation_count}"
                     )
 
+                    _tabular_start = time.time()
                     tabular_analysis = asyncio.run(run_tabular_analysis_with_multi_file_support(
                         user_question=user_message,
                         tabular_filenames=workspace_tabular_files,
@@ -10256,13 +10583,15 @@ def register_route_backend_chats(app):
                         gpt_auth=gpt_auth,
                         gpt_provider=gpt_provider,
                     ))
+                    _tabular_duration = round(time.time() - _tabular_start, 1)
                     tabular_invocations = get_new_plugin_invocations(
                         plugin_logger.get_invocations_for_conversation(user_id, conversation_id, limit=1000),
                         baseline_tabular_invocation_count
                     )
                     debug_print(
                         "[Streaming][Tabular SK] Completed workspace tabular analysis | "
-                        f"analysis_returned={bool(tabular_analysis)} | new_invocations={len(tabular_invocations)}"
+                        f"analysis_returned={bool(tabular_analysis)} | new_invocations={len(tabular_invocations)} | "
+                        f"tabular_duration_s={_tabular_duration} | request_elapsed_s={round(time.time() - request_start_time, 1)}"
                     )
                     tabular_thought_payloads = get_tabular_tool_thought_payloads(tabular_invocations)
                     for thought_content, thought_detail in tabular_thought_payloads:
