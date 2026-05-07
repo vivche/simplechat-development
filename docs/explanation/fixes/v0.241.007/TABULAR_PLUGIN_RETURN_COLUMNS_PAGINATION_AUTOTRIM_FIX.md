@@ -262,51 +262,66 @@ Function bodies were **not changed** — they already used `(param or '').strip(
 
 ## Why Does the UI Only Display Partial Results?
 
-Even when all bugs described in this document are fixed, users may still see **incomplete output** (e.g. a list of 400–500 rows when the file has 1,189). This is expected behaviour caused by the interaction between the SK auto-invoke cap and the plugin's per-call pagination limit. It is not a crash — the mini-agent simply runs out of allowed tool calls before it can fetch all pages.
+Users may see **incomplete output** (e.g. only part of a 1,189-row dataset) for one of two distinct reasons. Testing with the NIST SP 800-53 dataset confirmed which one is actually binding.
 
-### The three numbers that matter
+### Constraint 1 — SK auto-invoke cap (tool call limit)
 
 | Constraint | Value | Where set |
 |---|---|---|
 | Rows returned per plugin call | 100 (default `max_rows`) | `tabular_processing_plugin.py` parameter default |
-| Max tool calls per analysis pass (Auto mode) | 7 | `route_backend_chats.py` line ~4696 |
-| Max tool calls per analysis pass (Required mode) | 8 | `route_backend_chats.py` line ~4691 |
+| Max tool calls per analysis pass (Auto mode) | 7 | `route_backend_chats.py` `FunctionChoiceBehavior.Auto` |
+| Max tool calls per analysis pass (Required mode) | 8 | `route_backend_chats.py` `FunctionChoiceBehavior.Required` |
 
-### What actually happens (NIST SP 800-53 example)
+**When this is the bottleneck:** The LLM pages at the default 100 rows/call. A 1,189-row file needs ≥ 12 data calls + 2 overhead = 14 total — almost double the 7–8 cap. SK forces a final answer after call 7 or 8, leaving the remaining rows unfetched.
 
-A user asks: *"Give me a CSV table of all security control identifiers and names."*  
-The file has **1,189 rows** across one sheet. The mini-agent:
+The cap exists to prevent runaway tool-call loops. It is intentional.
 
-| Call # | Plugin function | Rows fetched | Cumulative rows |
-|--------|----------------|-------------|-----------------|
-| 1 | `list_tabular_files` | — | 0 |
-| 2 | `describe_tabular_file` | — | 0 |
-| 3 | `filter_rows` / `query_tabular_data` — page 1 (`start_row=0`) | 100 | 100 |
-| 4 | page 2 (`start_row=100`) | 100 | 200 |
-| 5 | page 3 (`start_row=200`) | 100 | 300 |
-| 6 | page 4 (`start_row=300`) | 100 | 400 |
-| 7 | page 5 (`start_row=400`) | 100 | 500 |
-| **cap hit** | SK forces synthesis | — | **500 of 1,189 fetched** |
+### Constraint 2 — Analysis truncation guard (character limit) ← **actual root cause for CSV export requests**
 
-SK's `maximum_auto_invoke_attempts` is exhausted. The model is forced to write its final answer using only the ~500 rows it has seen. The remaining 689 rows are never requested.
+After `get_chat_message_contents()` returns, `run_tabular_sk_analysis` applies a hard character cap to the synthesised text:
 
-A full pass at 100 rows per page would require **≥ 12 data calls** (plus 2 overhead calls), totalling 14 — nearly **double** the allowed cap.
+```python
+# route_backend_chats.py
+if len(analysis) > 100000:
+    analysis = analysis[:100000] + "\n[Analysis truncated]"
+```
 
-### Why the cap exists
+This guard was **originally set to 20,000 characters**. A full NIST SP 800-53 two-column CSV (identifier + name, 1,189 rows) serialises to approximately 70,000–80,000 characters — well above the old 20,000-char limit but below the updated 100,000-char limit.
 
-The cap prevents runaway loops where a confused model calls the same tool indefinitely. It is intentional. The fix tradeoffs are:
+### What actually happened (NIST SP 800-53 test, confirmed from logs)
+
+A user asked: *"Give me a CSV table of all security control identifiers and names."*
+
+| Call # | Plugin function | What happened |
+|--------|----------------|----------------|
+| 1 | `get_distinct_values` | Confirmed 1,189 unique identifiers |
+| 2 | `query_tabular_data(max_rows=1500)` | Fetched **all 1,189 rows** in one call |
+| — | SK synthesis | Produced ~75,000-char CSV string |
+| — | Truncation guard (old: 20,000 chars) | **Cut output at ~300 rows** — this was the failure |
+
+**The SK cap was never the bottleneck.** The LLM read the schema context (which states "1189 rows") and the user's explicit "all" request, then correctly chose `max_rows=1500` in a single call. The data was fully fetched in 2 tool calls. The truncation happened silently *after* SK returned the complete answer.
+
+**Fix applied (v0.241.007):** Raised the truncation guard from 20,000 → **100,000 characters** in `run_tabular_sk_analysis`. This covers any two-column export of up to ~1,600 rows and any typical analytical summary.
+
+### When the SK cap *does* become the bottleneck
+
+The cap matters when:
+- The LLM does not know the row count upfront (no pre-loaded schema)
+- The LLM defaults to `max_rows=100` and pages incrementally
+- The dataset requires more than 5–6 data calls at 100 rows each
+
+In those cases the workaround options are:
 
 | Approach | Effect | Risk |
 |---|---|---|
-| Raise the cap (`7/8` → `15`) | More pages fetched in one pass | Longer response time; higher token cost per turn |
-| Raise `max_rows` per call (`100` → `500`) | Fewer calls needed for the same data | Larger per-call payloads; auto-trim may fire earlier |
-| Both together | Covers most large-file exports in a single pass | Both risks apply |
+| Raise `max_rows` per call (`100` → `500+`) | Fewer calls needed for the same data | Larger per-call payloads; auto-trim may fire earlier |
+| Raise the cap (`7/8` → higher) | More pages fetched in one pass | Longer response time; higher token cost per turn |
 | Multi-turn pagination | User issues follow-up messages to continue | No code change needed; user burden increases |
-| Orchestration-layer outer loop | `run_tabular_sk_analysis` is called repeatedly until `has_more` is `false` | Most robust; most invasive change |
+| Orchestration-layer outer loop | `run_tabular_sk_analysis` called repeatedly until `has_more: false` | Most robust; most invasive change |
 
-### Recommended workaround (no code change required)
+### Recommended workaround for very large exports (no code change required)
 
-Ask the question in smaller, explicit slices:
+Ask the question in smaller explicit slices:
 
 > *"Give me rows 1–100 of all security control identifiers and names."*  
 > *"Continue from row 101."*  
@@ -314,7 +329,7 @@ Ask the question in smaller, explicit slices:
 
 Each turn resets the auto-invoke counter, giving the mini-agent a fresh set of 7–8 calls for that slice.
 
-### Permanent fix (future work)
+### Permanent fix for the cap limitation (future work)
 
 The cleanest long-term solution is to wrap `run_tabular_sk_analysis` in an outer pagination loop at the `route_backend_chats.py` level — calling it repeatedly until the plugin signals `has_more: false`, then concatenating all results before returning to the outer model. This bypasses the per-pass cap entirely and is transparent to the user.
 
