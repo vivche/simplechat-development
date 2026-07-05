@@ -2,7 +2,9 @@
 
 > Reference document for the "AI Chief of Staff" proof of concept built on SimpleChat.
 > Branch: `feature/ai-chief-of-staff-phase1`
-> Status: Implemented (POC, sample-data)
+> Status: Implemented (POC). Sample data is the default; a Microsoft Graph data source is
+> implemented behind the `chief_of_staff_data_source` setting (see
+> [DATA_SOURCES.md](DATA_SOURCES.md)).
 
 ---
 
@@ -98,10 +100,13 @@ BriefingSource (interface)
   (matches Scout's "it's already done for you" experience).
 - No upload/paste for the POC (deliberately kept out to preserve the pure-automation demo).
 
-### Switch-over path (later)
-When a mailbox is available: implement `GraphBriefingSource` using the existing
-`MSGraphPlugin` / `functions_msgraph_operations.py`, set `chief_of_staff_data_source = graph`,
-and the live source activates. No UI or agent changes required.
+### Switch-over path (implemented)
+The `GraphBriefingSource` is now implemented (`load_graph_briefing_data()` in
+`functions_chief_of_staff.py`) using the existing `MSGraphPlugin`. Set
+`chief_of_staff_data_source = graph` to activate it — no UI or agent changes required. It has
+not yet been validated against a live GCC-H mailbox; if the live fetch fails the app falls back
+to sample data so the dashboard still renders. See [DATA_SOURCES.md](DATA_SOURCES.md) for the
+full design, scopes, and normalization details.
 
 ---
 
@@ -149,27 +154,29 @@ token-storage risk. True background pre-computation is a phase-2 enhancement.
 5. **Briefing API** — on dashboard load, read from the active `BriefingSource` (sample now) and
    return summarized cards.
 6. **Action-item plugin + Cosmos `action_items` container** — the "track" half of goal #2.
-7. **(Later) `GraphBriefingSource` + Teams messages** — real mail/calendar via `MSGraphPlugin`;
-   Teams needs new scopes (`Chat.Read`, `ChannelMessage.Read.All`) and new operations in
-   `functions_msgraph_operations.py` / `msgraph_plugin.py`.
+7. **`GraphBriefingSource` + Teams messages** — real mail/calendar via `MSGraphPlugin`;
+   Teams messages read via `/me/chats` + per-chat `/messages` (best effort). Implemented
+   behind the `chief_of_staff_data_source = graph` setting; see
+   [DATA_SOURCES.md](DATA_SOURCES.md). Live GCC-H validation still pending.
 
 ---
 
 ## 5. Recommended Build Order (mock-first)
 
 ```
-1. BriefingSource interface + SampleBriefingSource + JSON fixtures
-2. Briefing API                          (GET /api/chief-of-staff/briefing → sample source)
-3. Chief of Staff global agent template  (action-item plugin wired)
-4. Dashboard page                        (Scout-style cards + live tiles)
-5. Action-item plugin + Cosmos container (extract / store / list / update)
---- later, when a mailbox exists ---
-6. GraphBriefingSource                    (delegated Graph; flip chief_of_staff_data_source)
-7. Teams messages                         (Chat.Read scope + new operations)
+1. BriefingSource interface + SampleBriefingSource + JSON fixtures      [done]
+2. Briefing API                          (GET /api/chief-of-staff/briefing)   [done]
+3. Chief of Staff global agent template  (action-item plugin wired)     [partial]
+4. Dashboard page                        (Scout-style cards + live tiles)     [done]
+5. Action-item plugin + Cosmos container (extract / store / list / update)    [deferred]
+--- live data ---
+6. GraphBriefingSource                    (delegated Graph; flip chief_of_staff_data_source)  [done, untested live]
+7. Teams messages                         (Chat.Read scope + new operations)  [done, untested live]
 ```
 
-Do 1–4 first for a demoable "open → auto-summary" loop on mock data, then 5. Items 6–7 are the
-switch-over to live data and require no UI/agent rework.
+Items 1–4 delivered the demoable "open → auto-summary" loop on mock data. Items 6–7 add the
+live Microsoft Graph data source behind the `chief_of_staff_data_source` setting and require no
+UI/agent rework. Item 5 (persistent action-item tracking in Cosmos) remains deferred.
 
 ---
 
@@ -238,8 +245,9 @@ added and modified for this POC. The table below is the original plan for refere
 ## 9. Decisions Made / Still Open
 
 **Decided:**
-- ✅ **Data source:** mock/sample data via `SampleBriefingSource` for the POC (no mailbox
-  available). Live `GraphBriefingSource` deferred until a suitable env exists.
+- ✅ **Data source:** pluggable via `chief_of_staff_data_source` (`sample` | `graph`). Sample
+  fixtures are the default for the POC; the live `GraphBriefingSource` is implemented and
+  activates when the setting is `graph` (live GCC-H validation still pending).
 - ✅ **Dashboard placement:** dedicated "Chief of Staff" page (Scout-style).
 - ✅ **Agent model:** single Chief of Staff agent (no multi-agent orchestration for phase 1).
 
@@ -258,5 +266,8 @@ added and modified for this POC. The table below is the original plan for refere
   `agent_orchestrator_magnetic.py`) — scaffolding exists but is **disabled**; a single Chief of
   Staff agent is sufficient and simpler for the POC.
 - True unattended background ingestion (offline_access refresh tokens / app permissions).
-- Teams channel/chat message reading (new Graph scopes required).
+- Persistent action-item tracking in a Cosmos `action_items` container (extract/store/list/
+  update). The briefing surfaces action items per run, but they are not yet persisted.
 - Cross-cloud (commercial `@microsoft.com`) access from the GCC-H app (not possible).
+- Live validation of the Microsoft Graph data source against a GCC-H mailbox/Teams tenant
+  (implemented but untested — see [DATA_SOURCES.md](DATA_SOURCES.md)).

@@ -14,8 +14,8 @@ All changes are additive and gated behind the `enable_chief_of_staff_dashboard` 
 ### Backend logic
 | File | Purpose |
 |---|---|
-| `application/single_app/functions_chief_of_staff.py` | Core module: loads bundled sample data, builds the LLM prompt, calls the configured Azure OpenAI model, and parses the JSON briefing. Exposes `generate_briefing()`. The prompt/parser produce six sections: summary, priorities, action items, commitments, meeting briefings, follow-ups. |
-| `application/single_app/route_backend_chief_of_staff.py` | Backend API route returning the generated briefing JSON. Gated by `@enabled_required('enable_chief_of_staff_dashboard')`. |
+| `application/single_app/functions_chief_of_staff.py` | Core module. Loads briefing input via a pluggable data source (`load_briefing_data()` dispatches on the `chief_of_staff_data_source` setting: `sample` fixtures by default, or live Microsoft Graph), builds the LLM prompt, calls the configured Azure OpenAI model, and parses the JSON briefing. Exposes `generate_briefing()`. Also contains `load_graph_briefing_data()` and pure Graph→fixture normalizers. The prompt/parser produce six sections: summary, priorities, action items, commitments, meeting briefings, follow-ups. See [DATA_SOURCES.md](DATA_SOURCES.md). |
+| `application/single_app/route_backend_chief_of_staff.py` | Backend API route returning the generated briefing JSON. Resolves the signed-in user via `get_current_user_id()` and passes it to `generate_briefing()`. Gated by `@enabled_required('enable_chief_of_staff_dashboard')`. |
 | `application/single_app/route_frontend_chief_of_staff.py` | Frontend route that renders the dashboard page. Gated by the same feature flag. |
 
 ### Frontend
@@ -34,8 +34,9 @@ All changes are additive and gated behind the `enable_chief_of_staff_dashboard` 
 ### Tests & documentation
 | File | Purpose |
 |---|---|
-| `functional_tests/test_chief_of_staff_briefing.py` | Validates sample-data loading, prompt inclusion of all sources, and JSON parsing across all six briefing sections. |
+| `functional_tests/test_chief_of_staff_briefing.py` | Validates sample-data loading, prompt inclusion of all sources, JSON parsing across all six briefing sections, and the Microsoft Graph→fixture normalizers (emails, meetings, Teams). |
 | `docs/chief-of-staff/README.md` | POC plan, GCC-H constraints, architecture, and design decisions. |
+| `docs/chief-of-staff/DATA_SOURCES.md` | Pluggable data-source design: the `chief_of_staff_data_source` setting, the sample vs. Microsoft Graph providers, Graph scopes/endpoints, normalization, and fallback behavior. |
 | `docs/chief-of-staff/FILES_CHANGED.md` | This file — as-built inventory of changed/added files. |
 
 ---
@@ -45,7 +46,7 @@ All changes are additive and gated behind the `enable_chief_of_staff_dashboard` 
 | File | Change |
 |---|---|
 | `application/single_app/app.py` | Imports and registers the frontend + backend Chief of Staff blueprints under `user_required`. |
-| `application/single_app/functions_settings.py` | Adds the default setting `enable_chief_of_staff_dashboard: False`. |
+| `application/single_app/functions_settings.py` | Adds the default settings `enable_chief_of_staff_dashboard: False` and `chief_of_staff_data_source: 'sample'` (`sample` \| `graph`). |
 | `application/single_app/route_frontend_admin_settings.py` | Reads the admin checkbox from the settings form and persists it. |
 | `application/single_app/templates/admin_settings.html` | Adds the "AI Chief of Staff (POC)" toggle card in the General tab. |
 | `application/single_app/templates/_sidebar_nav.html` | Adds the sidebar "Chief of Staff" link, shown only when the flag is on. |
@@ -62,8 +63,10 @@ Admin toggle (admin_settings.html)
              └─ Frontend route (route_frontend_chief_of_staff.py)
                   └─ dashboard.html + dashboard.js
                        └─ fetch briefing → Backend route (route_backend_chief_of_staff.py)
-                            └─ generate_briefing() (functions_chief_of_staff.py)
-                                 ├─ sample_data/*.json
+                            └─ generate_briefing(user_id) (functions_chief_of_staff.py)
+                                 └─ load_briefing_data(user_id)   ← chief_of_staff_data_source
+                                 │    ├─ 'sample' → sample_data/*.json
+                                 │    └─ 'graph'  → load_graph_briefing_data() → MSGraphPlugin
                                  └─ Azure OpenAI model
 ```
 
