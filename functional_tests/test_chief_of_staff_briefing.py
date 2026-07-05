@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Functional test for the AI Chief of Staff POC dashboard.
-Version: 0.250.016
+Version: 0.250.019
 Implemented in: 0.250.015
 
 This test ensures that:
@@ -10,6 +10,8 @@ This test ensures that:
   - The model-response JSON parser tolerates fenced code blocks and malformed output.
   - The parser exposes all briefing sections (priorities, action items,
     commitments, meeting briefings, follow-ups).
+  - The Microsoft Graph normalizers map Graph JSON into the sample fixture shape
+    (added in 0.250.019 with the Graph data source).
 """
 
 import sys
@@ -113,11 +115,99 @@ def test_parse_briefing_json():
         return False
 
 
+def test_graph_normalizers():
+    """Graph JSON should normalize into the same shape as the sample fixtures."""
+    print("Testing Microsoft Graph normalizers...")
+    try:
+        from functions_chief_of_staff import (
+            _normalize_graph_emails,
+            _normalize_graph_meetings,
+            _normalize_graph_teams,
+        )
+
+        emails = _normalize_graph_emails([
+            {
+                'id': 'AAMk',
+                'subject': 'Release decision',
+                'from': {'emailAddress': {'name': 'Priya Nair', 'address': 'priya@contoso.gov'}},
+                'receivedDateTime': '2025-06-09T08:12:00Z',
+                'bodyPreview': 'Need a <b>decision</b> by Wednesday.&nbsp;Thanks',
+            }
+        ])
+        assert len(emails) == 1
+        email = emails[0]
+        assert email['from'] == 'Priya Nair <priya@contoso.gov>'
+        assert email['to'] == 'You'
+        assert email['received'] == '2025-06-09T08:12:00Z'
+        assert email['subject'] == 'Release decision'
+        assert '<b>' not in email['body'] and 'decision by Wednesday' in email['body']
+
+        meetings = _normalize_graph_meetings([
+            {
+                'id': 'evt1',
+                'subject': 'Go/No-Go',
+                'start': {'dateTime': '2025-06-11T13:00:00Z', 'timeZone': 'UTC'},
+                'end': {'dateTime': '2025-06-11T13:30:00Z', 'timeZone': 'UTC'},
+                'attendees': [
+                    {'emailAddress': {'name': 'Marcus Webb', 'address': 'marcus@contoso.gov'}},
+                    {'emailAddress': {'address': 'dana@contoso.gov'}},
+                ],
+                'bodyPreview': 'Bring the risk summary.',
+            }
+        ])
+        assert len(meetings) == 1
+        meeting = meetings[0]
+        assert meeting['title'] == 'Go/No-Go'
+        assert meeting['start'] == '2025-06-11T13:00:00Z'
+        assert meeting['end'] == '2025-06-11T13:30:00Z'
+        assert meeting['attendees'] == ['Marcus Webb', 'dana@contoso.gov']
+        assert meeting['notes'] == 'Bring the risk summary.'
+
+        teams = _normalize_graph_teams(
+            [
+                {
+                    'id': 'msg1',
+                    'messageType': 'message',
+                    'from': {'user': {'displayName': 'Marcus Webb'}},
+                    'createdDateTime': '2025-06-09T10:05:00Z',
+                    'body': {'contentType': 'html', 'content': '<p>Staging is down again.</p>'},
+                },
+                {
+                    'id': 'sys1',
+                    'messageType': 'systemEventMessage',
+                    'from': None,
+                    'body': {'content': ''},
+                },
+            ],
+            channel='Delivery Team',
+        )
+        assert len(teams) == 1, "System/empty messages should be skipped"
+        message = teams[0]
+        assert message['channel'] == 'Delivery Team'
+        assert message['from'] == 'Marcus Webb'
+        assert message['sent'] == '2025-06-09T10:05:00Z'
+        assert message['message'] == 'Staging is down again.'
+
+        # Empty / None inputs should return empty lists, not raise.
+        assert _normalize_graph_emails(None) == []
+        assert _normalize_graph_meetings([]) == []
+        assert _normalize_graph_teams(None) == []
+
+        print("Graph normalizers passed!")
+        return True
+    except Exception as e:
+        print(f"Graph normalizers failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 if __name__ == "__main__":
     tests = [
         test_load_sample_data,
         test_prompt_includes_all_sources,
         test_parse_briefing_json,
+        test_graph_normalizers,
     ]
     results = []
     for test in tests:

@@ -1,12 +1,17 @@
 # functions_chief_of_staff.py
 
 import os
+import re
 import json
 import logging
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 # Note: functions_settings and functions_appinsights are imported lazily inside the
 # functions that need them, so the pure data/parsing logic in this module can be
-# loaded and tested without the full Flask/Azure runtime.
+# loaded and tested without the full Flask/Azure runtime. The Microsoft Graph plugin
+# is likewise imported lazily inside load_graph_briefing_data because it pulls in the
+# semantic-kernel runtime.
 
 # Directory holding the POC sample data fixtures (emails, meetings, Teams messages).
 SAMPLE_DATA_DIR = os.path.join(
@@ -56,24 +61,216 @@ def load_sample_briefing_data():
     return data
 
 
-def load_graph_briefing_data(user_id):
-    """Load live briefing input for a user from Microsoft Graph (Phase 2).
+# How far back to look for recent mail/Teams activity, and how far forward to scan the
+# calendar for meetings that still need preparation.
+GRAPH_LOOKBACK_HOURS = 48
+GRAPH_LOOKAHEAD_HOURS = 48
+GRAPH_MAX_EMAILS = 15
+GRAPH_MAX_MEETINGS = 10
+GRAPH_MAX_CHATS = 5
+GRAPH_MAX_MESSAGES_PER_CHAT = 5
 
-    Should return the same dict shape as load_sample_briefing_data():
+
+def _strip_html(value):
+    """Collapse a Graph HTML/text body into a short plain-text string for the prompt."""
+    text = str(value or '')
+    if not text:
+        return ''
+    # Drop tags, unescape the few entities Graph commonly emits, and squeeze whitespace.
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = (
+        text.replace('&nbsp;', ' ')
+        .replace('&amp;', '&')
+        .replace('&lt;', '<')
+        .replace('&gt;', '>')
+        .replace('&quot;', '"')
+        .replace('&#39;', "'")
+    )
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _format_graph_sender(address_holder):
+    """Turn a Graph 'from'/'organizer' object into a 'Name <email>' string."""
+    email_address = (address_holder or {}).get('emailAddress', {}) or {}
+    name = str(email_address.get('name') or '').strip()
+    address = str(email_address.get('address') or '').strip()
+    if name and address:
+        return f"{name} <{address}>"
+    return name or address
+
+
+def _normalize_graph_emails(value):
+    """Normalize Graph message objects into the sample email fixture shape."""
+    emails = []
+    for message in value or []:
+        if not isinstance(message, dict):
+            continue
+        emails.append({
+            'id': message.get('id', ''),
+            'from': _format_graph_sender(message.get('from')),
+            'to': 'You',
+            'received': message.get('receivedDateTime', ''),
+            'subject': message.get('subject', ''),
+            'body': _strip_html(message.get('bodyPreview')),
+        })
+    return emails
+
+
+def _normalize_graph_meetings(value):
+    """Normalize Graph calendar event objects into the sample meeting fixture shape."""
+    meetings = []
+    for event in value or []:
+        if not isinstance(event, dict):
+            continue
+        attendees = []
+        for attendee in event.get('attendees', []) or []:
+            if not isinstance(attendee, dict):
+                continue
+            attendee_email = attendee.get('emailAddress', {}) or {}
+            attendee_name = str(attendee_email.get('name') or attendee_email.get('address') or '').strip()
+            if attendee_name:
+                attendees.append(attendee_name)
+        meetings.append({
+            'id': event.get('id', ''),
+            'title': event.get('subject', ''),
+            'start': (event.get('start', {}) or {}).get('dateTime', ''),
+            'end': (event.get('end', {}) or {}).get('dateTime', ''),
+            'attendees': attendees,
+            'notes': _strip_html(event.get('bodyPreview')),
+        })
+    return meetings
+
+
+def _normalize_graph_teams(messages, channel=''):
+    """Normalize Graph chat message objects into the sample Teams fixture shape."""
+    teams_messages = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        # Skip system messages (membership changes, etc.) that carry no user body.
+        if str(message.get('messageType') or 'message').lower() != 'message':
+            continue
+        sender_user = ((message.get('from') or {}).get('user') or {})
+        sender = str(sender_user.get('displayName') or '').strip()
+        body_text = _strip_html((message.get('body') or {}).get('content'))
+        if not body_text:
+            continue
+        teams_messages.append({
+            'id': message.get('id', ''),
+            'channel': channel or 'Teams chat',
+            'from': sender,
+            'sent': message.get('createdDateTime', ''),
+            'message': body_text,
+        })
+    return teams_messages
+
+
+def _graph_value(result):
+    """Return the list under a Graph plugin result's 'value', or [] on error/empty."""
+    if isinstance(result, dict) and not result.get('error'):
+        value = result.get('value')
+        if isinstance(value, list):
+            return value
+    if isinstance(result, dict) and result.get('error'):
+        _log(
+            f"Chief of Staff: Graph request '{result.get('operation')}' failed: "
+            f"{result.get('error')} - {result.get('message')}",
+            level=logging.WARNING,
+        )
+    return []
+
+
+def _load_graph_teams_messages(plugin):
+    """Best-effort fetch of the user's recent Teams chat messages via the Graph plugin."""
+    teams_messages = []
+    chats_result = plugin._perform_graph_request(
+        'cos_list_chats',
+        'GET',
+        '/v1.0/me/chats',
+        ['Chat.Read'],
+        params={'$top': GRAPH_MAX_CHATS, '$select': 'id,topic,chatType'},
+        paginate=True,
+        max_items=GRAPH_MAX_CHATS,
+    )
+    for chat in _graph_value(chats_result):
+        if not isinstance(chat, dict):
+            continue
+        chat_id = str(chat.get('id') or '').strip()
+        if not chat_id:
+            continue
+        chat_topic = str(chat.get('topic') or '').strip() or 'Teams chat'
+        messages_result = plugin._perform_graph_request(
+            'cos_chat_messages',
+            'GET',
+            f"/v1.0/me/chats/{quote(chat_id, safe='')}/messages",
+            ['Chat.Read'],
+            params={'$top': GRAPH_MAX_MESSAGES_PER_CHAT},
+            paginate=False,
+            max_items=GRAPH_MAX_MESSAGES_PER_CHAT,
+        )
+        teams_messages.extend(
+            _normalize_graph_teams(_graph_value(messages_result), channel=chat_topic)
+        )
+    return teams_messages
+
+
+def load_graph_briefing_data(user_id):
+    """Load live briefing input for a user from Microsoft Graph.
+
+    Returns the same dict shape as load_sample_briefing_data():
     {'emails': [...], 'meetings': [...], 'teams_messages': [...]}.
 
-    Implementation plan (Phase 2):
-      - Acquire a delegated Graph token for the signed-in user (on-behalf-of),
-        with scopes Mail.Read, Calendars.Read, Chat.Read.
-      - GET /me/messages (recent/unread, windowed to the last 24-48h).
-      - GET /me/calendarView (today + upcoming) for meetings.
-      - GET /me/chats/.../messages for Teams.
-      - Normalize each source into the same lightweight fields the sample fixtures use
-        so _build_briefing_prompt and the LLM prompt need no changes.
+    Reuses SimpleChat's existing MSGraphPlugin, which acquires a delegated token for the
+    signed-in user (via the MSAL session cache) and handles pagination and error shaping.
+    Each source is fetched independently so a failure in one (for example, a missing
+    Chat.Read consent) still lets the others populate the briefing.
     """
-    raise NotImplementedError(
-        "Microsoft Graph data source for Chief of Staff is not implemented yet (Phase 2)."
+    # Imported lazily: MSGraphPlugin pulls in the semantic-kernel runtime, which we do not
+    # want to require for the pure data/parsing paths in this module.
+    from semantic_kernel_plugins.msgraph_plugin import MSGraphPlugin
+
+    plugin = MSGraphPlugin()
+
+    now = datetime.now(timezone.utc)
+    window_start = (now - timedelta(hours=GRAPH_LOOKBACK_HOURS)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    window_end = (now + timedelta(hours=GRAPH_LOOKAHEAD_HOURS)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    data = {'emails': [], 'meetings': [], 'teams_messages': []}
+
+    # Recent mail (newest first).
+    try:
+        messages_result = plugin.get_my_messages(
+            top=GRAPH_MAX_EMAILS,
+            select_fields='id,subject,from,receivedDateTime,bodyPreview',
+        )
+        data['emails'] = _normalize_graph_emails(_graph_value(messages_result))
+    except Exception as exc:
+        _log(f"Chief of Staff: Graph mail fetch failed: {exc}", level=logging.WARNING)
+
+    # Calendar events in the today +/- window that may still need preparation.
+    try:
+        events_result = plugin.get_my_events(
+            top=GRAPH_MAX_MEETINGS,
+            start_datetime=window_start,
+            end_datetime=window_end,
+            select_fields='id,subject,start,end,attendees,bodyPreview,organizer',
+        )
+        data['meetings'] = _normalize_graph_meetings(_graph_value(events_result))
+    except Exception as exc:
+        _log(f"Chief of Staff: Graph calendar fetch failed: {exc}", level=logging.WARNING)
+
+    # Recent Teams chat messages (best effort).
+    try:
+        data['teams_messages'] = _load_graph_teams_messages(plugin)
+    except Exception as exc:
+        _log(f"Chief of Staff: Graph Teams fetch failed: {exc}", level=logging.WARNING)
+
+    _log(
+        "Chief of Staff: loaded Graph briefing data "
+        f"(emails={len(data['emails'])}, meetings={len(data['meetings'])}, "
+        f"teams={len(data['teams_messages'])})."
     )
+    return data
 
 
 def load_briefing_data(user_id=None):
