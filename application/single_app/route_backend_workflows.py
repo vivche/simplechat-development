@@ -6,6 +6,7 @@ Backend routes for personal and group workflows.
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -67,6 +68,7 @@ from functions_settings import (
     enabled_required,
     get_group_workflow_management_roles,
     get_settings,
+    is_user_workflows_enabled_for_user,
     is_group_workflows_enabled_for_group,
     workflow_user_required,
 )
@@ -79,7 +81,15 @@ from functions_source_review import (
     validate_url_access_request,
 )
 from functions_workflow_runner import run_group_workflow, run_personal_workflow
+from route_backend_agents import (
+    _build_agent_instruction_api_params,
+    _create_agent_instruction_client,
+    _resolve_agent_instruction_model,
+)
 from swagger_wrapper import swagger_route, get_auth_security
+
+
+WORKFLOW_INSTRUCTION_FIELD_LIMIT = 6000
 
 
 def _normalize_identifier(value):
@@ -92,6 +102,57 @@ def _normalize_bool(value):
     if isinstance(value, str):
         return value.strip().lower() in {'1', 'true', 'yes', 'on'}
     return bool(value)
+
+
+def _normalize_workflow_instruction_draft_input(value, max_length=WORKFLOW_INSTRUCTION_FIELD_LIMIT):
+    normalized_value = re.sub(r'\s+', ' ', str(value or '')).strip()
+    return normalized_value[:max_length]
+
+
+def _build_workflow_instruction_messages(name, description, brief, existing_instructions):
+    name = _normalize_workflow_instruction_draft_input(name, 500)
+    description = _normalize_workflow_instruction_draft_input(description)
+    brief = _normalize_workflow_instruction_draft_input(brief)
+    existing_instructions = _normalize_workflow_instruction_draft_input(existing_instructions)
+
+    user_sections = [
+        f'Workflow name: {name or "Not provided"}',
+        f'Workflow description: {description or "Not provided"}',
+        f'Task brief: {brief or "Not provided"}',
+    ]
+    if existing_instructions:
+        user_sections.append(
+            f'Existing workflow instructions to improve or preserve where useful:\n{existing_instructions}'
+        )
+
+    return [
+        {
+            'role': 'system',
+            'content': (
+                'You write production-ready SimpleChat workflow instructions. '
+                'Return only the finished instructions in Markdown. '
+                'Be specific about the recurring task goal, inputs to inspect, output format, constraints, '
+                'failure handling, and any document or URL review expectations. '
+                'Do not include code fences, preambles, or commentary about how the instructions were created.'
+            ),
+        },
+        {
+            'role': 'user',
+            'content': (
+                '\n\n'.join(user_sections)
+                + '\n\nDraft concise but complete workflow instructions that the user can edit before saving the workflow.'
+            ),
+        },
+    ]
+
+
+def _assert_personal_workflow_draft_access(settings):
+    user_roles = (session.get('user') or {}).get('roles', [])
+    if is_user_workflows_enabled_for_user(settings, user_roles=user_roles):
+        return
+    if not settings.get('allow_user_workflows', False):
+        raise ValueError('Personal workflows are disabled.')
+    raise PermissionError('Personal workflows require the WorkflowUser app role.')
 
 
 def _get_current_user_info_with_roles():
@@ -533,8 +594,73 @@ def _stream_group_workflow_activity(user_id, group_id, conversation_id='', workf
         time.sleep(0.5)
 
 
-def register_route_backend_workflows(app):
-    @app.route('/api/user/workflows', methods=['GET'])
+def register_route_backend_workflows(bp):
+    @bp.route('/api/workflows/draft-instructions', methods=['POST'])
+    @swagger_route(security=get_auth_security())
+    @login_required
+    @user_required
+    def draft_workflow_instructions():
+        settings = get_settings()
+        request_data = request.get_json(silent=True) or {}
+        user_id = get_current_user_id()
+        workflow_scope = str(request_data.get('workflow_scope') or 'personal').strip().lower()
+
+        try:
+            if workflow_scope == 'group':
+                _resolve_active_group_for_workflow_management(user_id)
+            elif workflow_scope == 'personal':
+                _assert_personal_workflow_draft_access(settings)
+            else:
+                return jsonify({'error': 'Invalid workflow scope.'}), 400
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        except (LookupError, PermissionError) as exc:
+            return jsonify({'error': str(exc)}), 403
+
+        name = request_data.get('name')
+        description = request_data.get('description')
+        brief = request_data.get('brief')
+        existing_instructions = request_data.get('existing_instructions')
+        if not any(str(value or '').strip() for value in (name, description, brief, existing_instructions)):
+            return jsonify({'error': 'Provide a task brief, workflow name, description, or existing instructions.'}), 400
+
+        try:
+            model_name = _resolve_agent_instruction_model(settings)
+            client = _create_agent_instruction_client(settings)
+            messages = _build_workflow_instruction_messages(
+                name,
+                description,
+                brief,
+                existing_instructions,
+            )
+            response = client.chat.completions.create(
+                **_build_agent_instruction_api_params(model_name, messages)
+            )
+            instructions = ''
+            if getattr(response, 'choices', None):
+                instructions = str(response.choices[0].message.content or '').strip()
+            if not instructions:
+                return jsonify({'error': 'The model did not return workflow instructions.'}), 502
+
+            log_event(
+                '[WorkflowInstructions] Workflow instructions drafted.',
+                extra={
+                    'user_id': str(user_id),
+                    'workflow_scope': workflow_scope,
+                    'model_name': model_name,
+                },
+                debug_only=True,
+            )
+            return jsonify({'success': True, 'instructions': instructions})
+        except Exception as exc:
+            log_event(
+                f'[WorkflowInstructions] Error drafting workflow instructions: {exc}',
+                level=logging.ERROR,
+                exceptionTraceback=True,
+            )
+            return jsonify({'error': 'Failed to draft workflow instructions.'}), 500
+
+    @bp.route('/api/user/workflows', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -545,7 +671,7 @@ def register_route_backend_workflows(app):
         return jsonify({'workflows': get_personal_workflows(user_id)})
 
 
-    @app.route('/api/user/workflows/file-sync-sources', methods=['GET'])
+    @bp.route('/api/user/workflows/file-sync-sources', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -565,7 +691,7 @@ def register_route_backend_workflows(app):
             return jsonify({'error': 'Unable to load File Sync sources right now.'}), 500
 
 
-    @app.route('/api/user/workflows', methods=['POST'])
+    @bp.route('/api/user/workflows', methods=['POST'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -612,7 +738,7 @@ def register_route_backend_workflows(app):
         return jsonify({'success': True, 'workflow': workflow}), 201 if is_create else 200
 
 
-    @app.route('/api/user/workflows/<workflow_id>', methods=['DELETE'])
+    @bp.route('/api/user/workflows/<workflow_id>', methods=['DELETE'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -636,7 +762,7 @@ def register_route_backend_workflows(app):
         return jsonify({'success': True})
 
 
-    @app.route('/api/user/workflows/<workflow_id>/runs', methods=['GET'])
+    @bp.route('/api/user/workflows/<workflow_id>/runs', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -654,7 +780,7 @@ def register_route_backend_workflows(app):
         })
 
 
-    @app.route('/api/user/workflows/<workflow_id>/runs/<run_id>/items', methods=['GET'])
+    @bp.route('/api/user/workflows/<workflow_id>/runs/<run_id>/items', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -677,7 +803,7 @@ def register_route_backend_workflows(app):
         })
 
 
-    @app.route('/api/user/workflows/<workflow_id>/runs/<run_id>/resume-failed', methods=['POST'])
+    @bp.route('/api/user/workflows/<workflow_id>/runs/<run_id>/resume-failed', methods=['POST'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -746,7 +872,7 @@ def register_route_backend_workflows(app):
             release_distributed_task_lock(lock_document)
 
 
-    @app.route('/api/group/workflows', methods=['GET'])
+    @bp.route('/api/group/workflows', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -765,7 +891,7 @@ def register_route_backend_workflows(app):
             return jsonify({'error': str(exc)}), 403
 
 
-    @app.route('/api/group/workflows/file-sync-sources', methods=['GET'])
+    @bp.route('/api/group/workflows/file-sync-sources', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -793,7 +919,7 @@ def register_route_backend_workflows(app):
             return jsonify({'error': 'Unable to load File Sync sources right now.'}), 500
 
 
-    @app.route('/api/group/workflows/agents', methods=['GET'])
+    @bp.route('/api/group/workflows/agents', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -820,7 +946,7 @@ def register_route_backend_workflows(app):
             return jsonify({'error': 'Unable to load group workflow agents right now.'}), 500
 
 
-    @app.route('/api/group/workflows', methods=['POST'])
+    @bp.route('/api/group/workflows', methods=['POST'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -879,7 +1005,7 @@ def register_route_backend_workflows(app):
         return jsonify({'success': True, 'workflow': workflow}), 201 if is_create else 200
 
 
-    @app.route('/api/group/workflows/<workflow_id>', methods=['DELETE'])
+    @bp.route('/api/group/workflows/<workflow_id>', methods=['DELETE'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -914,7 +1040,7 @@ def register_route_backend_workflows(app):
         return jsonify({'success': True})
 
 
-    @app.route('/api/group/workflows/<workflow_id>/runs', methods=['GET'])
+    @bp.route('/api/group/workflows/<workflow_id>/runs', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -941,7 +1067,7 @@ def register_route_backend_workflows(app):
         })
 
 
-    @app.route('/api/group/workflows/<workflow_id>/runs/<run_id>/items', methods=['GET'])
+    @bp.route('/api/group/workflows/<workflow_id>/runs/<run_id>/items', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -973,7 +1099,7 @@ def register_route_backend_workflows(app):
         })
 
 
-    @app.route('/api/group/workflows/<workflow_id>/runs/<run_id>/resume-failed', methods=['POST'])
+    @bp.route('/api/group/workflows/<workflow_id>/runs/<run_id>/resume-failed', methods=['POST'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -1059,7 +1185,7 @@ def register_route_backend_workflows(app):
             release_distributed_task_lock(lock_document)
 
 
-    @app.route('/api/group/workflows/activity', methods=['GET'])
+    @bp.route('/api/group/workflows/activity', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -1102,7 +1228,7 @@ def register_route_backend_workflows(app):
             return jsonify({'error': 'Unable to load workflow activity right now.'}), 500
 
 
-    @app.route('/api/group/workflows/activity/stream', methods=['GET'])
+    @bp.route('/api/group/workflows/activity/stream', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -1161,7 +1287,7 @@ def register_route_backend_workflows(app):
         )
 
 
-    @app.route('/api/group/workflows/<workflow_id>/run', methods=['POST'])
+    @bp.route('/api/group/workflows/<workflow_id>/run', methods=['POST'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -1223,7 +1349,7 @@ def register_route_backend_workflows(app):
             release_distributed_task_lock(lock_document)
 
 
-    @app.route('/api/user/workflows/activity', methods=['GET'])
+    @bp.route('/api/user/workflows/activity', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -1262,7 +1388,7 @@ def register_route_backend_workflows(app):
             return jsonify({'error': 'Unable to load workflow activity right now.'}), 500
 
 
-    @app.route('/api/user/workflows/activity/stream', methods=['GET'])
+    @bp.route('/api/user/workflows/activity/stream', methods=['GET'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required
@@ -1316,7 +1442,7 @@ def register_route_backend_workflows(app):
         )
 
 
-    @app.route('/api/user/workflows/<workflow_id>/run', methods=['POST'])
+    @bp.route('/api/user/workflows/<workflow_id>/run', methods=['POST'])
     @swagger_route(security=get_auth_security())
     @login_required
     @user_required

@@ -26,7 +26,7 @@ from semantic_kernel_plugins.fact_memory_plugin import FactMemoryPlugin
 from semantic_kernel_plugins.document_search_plugin import DocumentSearchPlugin
 from semantic_kernel_plugins.chart_plugin import ChartPlugin
 from semantic_kernel_plugins.tabular_processing_plugin import TabularProcessingPlugin
-from functions_settings import get_settings, get_user_settings, is_tabular_processing_enabled
+from functions_settings import get_settings, get_user_settings, is_tabular_processing_enabled, resolve_model_endpoint_foundry_scope
 from foundry_agent_runtime import (
     AzureAIFoundryChatCompletionAgent,
     AzureAIFoundryNewChatCompletionAgent,
@@ -50,6 +50,7 @@ from functions_debug import debug_print
 from flask import g
 from config import cognitive_services_scope
 from functions_databricks_operations import DATABRICKS_LEGACY_TABLE_PLUGIN_TYPE, DATABRICKS_PLUGIN_TYPE
+from functions_snowflake_operations import SNOWFLAKE_PLUGIN_TYPE, SNOWFLAKE_SENSITIVE_ADDITIONAL_FIELDS
 from functions_tableau_operations import TABLEAU_PLUGIN_TYPE
 from functions_keyvault import (
     SQL_PLUGIN_SENSITIVE_ADDITIONAL_FIELDS,
@@ -107,6 +108,7 @@ from functions_mcp_operations import MCP_PLUGIN_TYPE
 from semantic_kernel_plugins.databricks_plugin_factory import DatabricksPluginFactory
 from semantic_kernel_plugins.mcp_plugin_factory import McpPluginFactory
 from semantic_kernel_plugins.openapi_plugin_factory import OpenApiPluginFactory
+from semantic_kernel_plugins.snowflake_plugin_factory import SnowflakePluginFactory
 from semantic_kernel_plugins.tableau_plugin_factory import TableauPluginFactory
 from functions_agent_scope import find_agent_by_scope, is_selected_agent_scope_enabled
 import app_settings_cache
@@ -464,26 +466,7 @@ def resolve_agent_config(agent, settings, group_scope_id=None):
         return str(cognitive_services_scope or "").strip()
 
     def resolve_foundry_scope(auth_settings, endpoint=None):
-        custom_scope = (auth_settings.get("foundry_scope") or "").strip()
-        if custom_scope:
-            return custom_scope
-
-        management_cloud = (auth_settings.get("management_cloud") or "public").lower()
-        if management_cloud in ("government", "usgovernment", "usgov"):
-            return "https://ai.azure.us/.default"
-        if management_cloud == "china":
-            return "https://ai.azure.cn/.default"
-        if management_cloud == "germany":
-            return "https://ai.azure.de/.default"
-
-        endpoint_value = (endpoint or "").lower()
-        if "azure.us" in endpoint_value:
-            return "https://ai.azure.us/.default"
-        if "azure.cn" in endpoint_value:
-            return "https://ai.azure.cn/.default"
-        if "azure.de" in endpoint_value:
-            return "https://ai.azure.de/.default"
-        return "https://ai.azure.com/.default"
+        return resolve_model_endpoint_foundry_scope(auth_settings, endpoint=endpoint)
 
     def build_token_provider(auth_settings, provider="aoai", endpoint=None):
         auth_type = (auth_settings.get("type") or "managed_identity").lower()
@@ -1487,6 +1470,9 @@ def _load_agent_plugins_original_method(kernel, plugin_manifests, mode_label="gl
                     elif plugin_type in {DATABRICKS_PLUGIN_TYPE, DATABRICKS_LEGACY_TABLE_PLUGIN_TYPE}:
                         plugin = DatabricksPluginFactory.create_from_config(manifest)
                         print(f"[SK Loader] Created Databricks plugin: {name}")
+                    elif plugin_type == SNOWFLAKE_PLUGIN_TYPE:
+                        plugin = SnowflakePluginFactory.create_from_config(manifest)
+                        print(f"[SK Loader] Created Snowflake plugin: {name}")
                     elif plugin_type == TABLEAU_PLUGIN_TYPE:
                         plugin = TableauPluginFactory.create_from_config(manifest)
                         print(f"[SK Loader] Created Tableau plugin: {name}")
@@ -2114,6 +2100,15 @@ def _is_sql_sensitive_plugin_field(plugin_manifest, field_name):
     return plugin_type in {"sql_query", "sql_schema"} and field_name in SQL_PLUGIN_SENSITIVE_ADDITIONAL_FIELDS
 
 
+def _is_sensitive_plugin_additional_field(plugin_manifest, field_name):
+    """Return True when an action additional field should resolve as a secret."""
+    plugin_type = str((plugin_manifest or {}).get("type") or "").strip().lower()
+    return (
+        _is_sql_sensitive_plugin_field(plugin_manifest, field_name)
+        or (plugin_type == SNOWFLAKE_PLUGIN_TYPE and field_name in SNOWFLAKE_SENSITIVE_ADDITIONAL_FIELDS)
+    )
+
+
 def resolve_key_vault_secrets_in_plugins(plugin_manifest, settings):
     """
     Resolve any Key Vault secrets in a plugin manifest.
@@ -2162,7 +2157,7 @@ def resolve_key_vault_secrets_in_plugins(plugin_manifest, settings):
         for field_name, value in additional_fields.items():
             if not isinstance(value, str) or not validate_secret_name_dynamic(value):
                 continue
-            if not (field_name.endswith("__Secret") or _is_sql_sensitive_plugin_field(plugin_manifest, field_name)):
+            if not (field_name.endswith("__Secret") or _is_sensitive_plugin_additional_field(plugin_manifest, field_name)):
                 continue
             try:
                 resolved_additional_fields[field_name] = resolve_secret_reference_for_context(
@@ -2353,6 +2348,8 @@ def _load_plugins_original_method(kernel, plugin_manifests, settings, mode_label
                         plugin = OpenApiPluginFactory.create_from_config(manifest)
                     elif plugin_type in {DATABRICKS_PLUGIN_TYPE, DATABRICKS_LEGACY_TABLE_PLUGIN_TYPE}:
                         plugin = DatabricksPluginFactory.create_from_config(manifest)
+                    elif plugin_type == SNOWFLAKE_PLUGIN_TYPE:
+                        plugin = SnowflakePluginFactory.create_from_config(manifest)
                     elif plugin_type == TABLEAU_PLUGIN_TYPE:
                         plugin = TableauPluginFactory.create_from_config(manifest)
                     elif plugin_type == MCP_PLUGIN_TYPE or normalized_type == normalize(MCP_PLUGIN_TYPE):

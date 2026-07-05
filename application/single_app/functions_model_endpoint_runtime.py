@@ -1,17 +1,20 @@
 # functions_model_endpoint_runtime.py
 """Runtime helpers for configured model endpoint clients and Semantic Kernel services."""
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AzureOpenAI
 from azure.identity import ClientSecretCredential, DefaultAzureCredential, get_bearer_token_provider
 from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, OpenAIChatCompletion
 
 from config import cognitive_services_scope
 from foundry_agent_runtime import resolve_authority
+from functions_settings import resolve_model_endpoint_foundry_scope
 from model_endpoint_clients import (
     MODEL_ENDPOINT_PROTOCOL_ANTHROPIC,
     MODEL_ENDPOINT_PROTOCOL_AZURE_OPENAI,
     MODEL_ENDPOINT_PROTOCOL_OPENAI_STYLE,
     AnthropicSemanticKernelChatCompletion,
+    build_anthropic_chat_client,
+    build_openai_style_chat_client,
     infer_model_endpoint_protocol,
     normalize_openai_style_base_url,
     resolve_openai_style_request_api_version,
@@ -86,28 +89,7 @@ def build_model_endpoint_context(
 
 def resolve_foundry_scope_for_endpoint_auth(auth_settings, endpoint=None):
     """Resolve the correct scope for Foundry-backed inference authentication."""
-    auth_settings = auth_settings or {}
-    custom_scope = str(auth_settings.get('foundry_scope') or '').strip()
-    if custom_scope:
-        return custom_scope
-
-    management_cloud = str(auth_settings.get('management_cloud') or 'public').lower()
-    if management_cloud in ('government', 'usgovernment', 'usgov'):
-        return 'https://ai.azure.us/.default'
-    if management_cloud == 'china':
-        return 'https://ai.azure.cn/.default'
-    if management_cloud == 'germany':
-        return 'https://ai.azure.de/.default'
-
-    endpoint_value = str(endpoint or '').lower()
-    if 'azure.us' in endpoint_value:
-        return 'https://ai.azure.us/.default'
-    if 'azure.cn' in endpoint_value:
-        return 'https://ai.azure.cn/.default'
-    if 'azure.de' in endpoint_value:
-        return 'https://ai.azure.de/.default'
-
-    return 'https://ai.azure.com/.default'
+    return resolve_model_endpoint_foundry_scope(auth_settings, endpoint=endpoint)
 
 
 def resolve_credential_for_model_endpoint_auth(auth_settings):
@@ -124,6 +106,54 @@ def resolve_credential_for_model_endpoint_auth(auth_settings):
 
     managed_identity_client_id = auth_settings.get('managed_identity_client_id') or None
     return DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id)
+
+
+def build_model_endpoint_sync_chat_client(
+    auth_settings,
+    provider,
+    endpoint,
+    api_version,
+    deployment_name='',
+):
+    """Create a protocol-aware synchronous chat client for a configured model endpoint."""
+    auth_settings = auth_settings or {}
+    normalized_provider = str(provider or 'aoai').strip().lower()
+    runtime_protocol = infer_model_endpoint_protocol(normalized_provider, endpoint, deployment_name)
+    auth_type = str(auth_settings.get('type') or 'managed_identity').strip().lower()
+
+    if auth_type in ('api_key', 'key'):
+        api_key = auth_settings.get('api_key')
+        if not api_key:
+            raise ValueError('Selected model endpoint is missing an API key.')
+        if runtime_protocol == MODEL_ENDPOINT_PROTOCOL_ANTHROPIC:
+            return build_anthropic_chat_client(endpoint=endpoint, api_key=api_key), runtime_protocol
+        if runtime_protocol == MODEL_ENDPOINT_PROTOCOL_OPENAI_STYLE:
+            return build_openai_style_chat_client(api_key, endpoint, api_version), runtime_protocol
+        return AzureOpenAI(
+            api_version=api_version,
+            azure_endpoint=endpoint,
+            api_key=api_key,
+        ), runtime_protocol
+
+    credential = resolve_credential_for_model_endpoint_auth(auth_settings)
+    scope = cognitive_services_scope
+    if normalized_provider in ('aifoundry', 'new_foundry', 'anthropic', 'claude') or runtime_protocol != MODEL_ENDPOINT_PROTOCOL_AZURE_OPENAI:
+        scope = resolve_foundry_scope_for_endpoint_auth(auth_settings, endpoint=endpoint)
+
+    if runtime_protocol == MODEL_ENDPOINT_PROTOCOL_ANTHROPIC:
+        token = credential.get_token(scope).token
+        return build_anthropic_chat_client(endpoint=endpoint, bearer_token=token), runtime_protocol
+
+    if runtime_protocol == MODEL_ENDPOINT_PROTOCOL_OPENAI_STYLE:
+        token = credential.get_token(scope).token
+        return build_openai_style_chat_client(token, endpoint, api_version), runtime_protocol
+
+    token_provider = get_bearer_token_provider(credential, scope)
+    return AzureOpenAI(
+        api_version=api_version,
+        azure_endpoint=endpoint,
+        azure_ad_token_provider=token_provider,
+    ), runtime_protocol
 
 
 def _append_model_endpoint_candidate(endpoints, scope, endpoint):

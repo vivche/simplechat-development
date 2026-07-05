@@ -2,6 +2,7 @@
 
 import re
 import shutil
+import subprocess
 import traceback
 import zipfile
 from io import BytesIO
@@ -16,7 +17,10 @@ from functions_logging import *
 from functions_authentication import *
 from functions_debug import *
 from functions_keyvault import SecretReturnType, keyvault_model_endpoint_get_helper
+from functions_model_endpoint_runtime import MODEL_ENDPOINT_PROVIDER_ALLOWLIST, build_model_endpoint_sync_chat_client
 import azure.cognitiveservices.speech as speechsdk
+
+_AUDIO_RUNTIME_CAPABILITIES_CACHE = None
 
 def allowed_file(filename, allowed_extensions=None):
     if not allowed_extensions:
@@ -74,38 +78,15 @@ def _resolve_model_endpoint_scope(provider, auth_settings, endpoint=None):
     return "https://ai.azure.com/.default"
 
 
-def _build_model_endpoint_client(auth_settings, provider, endpoint, api_version):
-    auth_settings = auth_settings or {}
-    auth_type = str(auth_settings.get("type") or "managed_identity").lower()
-
-    if auth_type in ("api_key", "key"):
-        api_key = auth_settings.get("api_key")
-        if not api_key:
-            raise ValueError("Selected metadata extraction endpoint is missing an API key.")
-        return AzureOpenAI(
-            api_version=api_version,
-            azure_endpoint=endpoint,
-            api_key=api_key,
-        )
-
-    if auth_type == "service_principal":
-        credential = ClientSecretCredential(
-            tenant_id=auth_settings.get("tenant_id"),
-            client_id=auth_settings.get("client_id"),
-            client_secret=auth_settings.get("client_secret"),
-            authority=_resolve_model_endpoint_authority(auth_settings),
-        )
-    else:
-        managed_identity_client_id = auth_settings.get("managed_identity_client_id") or None
-        credential = DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id)
-
-    scope = _resolve_model_endpoint_scope(provider, auth_settings, endpoint=endpoint)
-    token_provider = get_bearer_token_provider(credential, scope)
-    return AzureOpenAI(
-        api_version=api_version,
-        azure_endpoint=endpoint,
-        azure_ad_token_provider=token_provider,
+def _build_model_endpoint_client(auth_settings, provider, endpoint, api_version, deployment_name):
+    client, _ = build_model_endpoint_sync_chat_client(
+        auth_settings,
+        provider,
+        endpoint,
+        api_version,
+        deployment_name=deployment_name,
     )
+    return client
 
 
 def _resolve_metadata_extraction_client(settings):
@@ -144,12 +125,12 @@ def _resolve_metadata_extraction_client(settings):
         endpoint = str(connection.get("endpoint") or "").strip()
         api_version = str(connection.get("openai_api_version") or connection.get("api_version") or "").strip()
 
-        if provider not in ("aoai", "aifoundry", "new_foundry"):
+        if provider not in MODEL_ENDPOINT_PROVIDER_ALLOWLIST:
             raise ValueError(f"Selected metadata extraction provider '{provider}' is not supported.")
         if not endpoint or not api_version or not deployment:
             raise ValueError("Selected metadata extraction endpoint is missing endpoint, API version, or deployment configuration.")
 
-        return _build_model_endpoint_client(auth_settings, provider, endpoint, api_version), deployment
+        return _build_model_endpoint_client(auth_settings, provider, endpoint, api_version, deployment), deployment
 
     gpt_model = settings.get('metadata_extraction_model')
     if not gpt_model:
@@ -5762,7 +5743,7 @@ def process_doc(document_id, user_id, temp_file_path, original_filename, enable_
 
     return total_chunks_saved, total_embedding_tokens, embedding_model_name
 
-def process_msg(document_id, user_id, temp_file_path, original_filename, enable_enhanced_citations, update_callback, group_id=None, public_workspace_id=None):
+def process_msg(document_id, user_id, temp_file_path, original_filename, enable_enhanced_citations, update_callback, group_id=None, public_workspace_id=None, auto_extract_metadata=True):
     """Processes Outlook .msg files into searchable plain-text chunks."""
     is_group = group_id is not None
     is_public_workspace = public_workspace_id is not None
@@ -5771,7 +5752,8 @@ def process_msg(document_id, user_id, temp_file_path, original_filename, enable_
     total_chunks_saved = 0
     total_embedding_tokens = 0
     embedding_model_name = None
-    chunk_config = get_chunk_size_config(get_settings())
+    settings = get_settings()
+    chunk_config = get_chunk_size_config(settings)
     target_words_per_chunk = max(1, int(chunk_config.get('msg', {}).get('value', 400)))
 
     if enable_enhanced_citations:
@@ -5838,6 +5820,18 @@ def process_msg(document_id, user_id, temp_file_path, original_filename, enable_
 
     except Exception as e:
         raise Exception(f"Failed processing Outlook MSG file {original_filename}: {e}")
+
+    enable_extract_meta_data = settings.get('enable_extract_meta_data', False)
+    if auto_extract_metadata and enable_extract_meta_data and total_chunks_saved > 0:
+        _run_final_metadata_extraction(
+            document_id,
+            user_id,
+            total_chunks_saved,
+            enable_extract_meta_data,
+            update_callback,
+            group_id=group_id,
+            public_workspace_id=public_workspace_id
+        )
 
     return total_chunks_saved, total_embedding_tokens, embedding_model_name
 
@@ -7354,12 +7348,89 @@ def process_document_reprocess_extraction_background(document_id, user_id, targe
 def _get_content_type(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     mapping = {
-        '.wav': 'audio/wav',
-        '.mp3': 'audio/mpeg',
+        '.3ga': 'audio/3gpp',
+        '.aac': 'audio/aac',
+        '.ac3': 'audio/ac3',
+        '.aif': 'audio/aiff',
+        '.aifc': 'audio/aiff',
+        '.aiff': 'audio/aiff',
+        '.amr': 'audio/amr',
+        '.ape': 'audio/x-ape',
+        '.au': 'audio/basic',
+        '.caf': 'audio/x-caf',
+        '.dts': 'audio/vnd.dts',
+        '.f4a': 'audio/mp4',
+        '.flac': 'audio/flac',
         '.m4a': 'audio/mp4',
-        '.mp4': 'audio/mp4'
+        '.m4b': 'audio/mp4',
+        '.m4r': 'audio/mp4',
+        '.mka': 'audio/x-matroska',
+        '.mp2': 'audio/mpeg',
+        '.mp3': 'audio/mpeg',
+        '.mpa': 'audio/mpeg',
+        '.mp4': 'audio/mp4',
+        '.oga': 'audio/ogg',
+        '.ogg': 'audio/ogg',
+        '.opus': 'audio/opus',
+        '.spx': 'audio/ogg',
+        '.wav': 'audio/wav',
+        '.weba': 'audio/webm',
+        '.wma': 'audio/x-ms-wma',
+        '.wv': 'audio/x-wavpack'
     }
     return mapping.get(ext, 'application/octet-stream')
+
+
+def get_audio_runtime_capabilities(force_refresh: bool = False):
+    """Return cached runtime support details for audio upload transcoding."""
+    global _AUDIO_RUNTIME_CAPABILITIES_CACHE
+    if _AUDIO_RUNTIME_CAPABILITIES_CACHE is not None and not force_refresh:
+        return dict(_AUDIO_RUNTIME_CAPABILITIES_CACHE)
+
+    supported_extensions = sorted(f'.{extension}' for extension in AUDIO_EXTENSIONS)
+    source_extensions = sorted(
+        f'.{extension}'
+        for extension in AUDIO_FAST_TRANSCRIPTION_SOURCE_EXTENSIONS
+        if extension in AUDIO_EXTENSIONS
+    )
+    ffmpeg_path = shutil.which('ffmpeg') or ''
+    ffprobe_path = shutil.which('ffprobe') or ''
+
+    capabilities = {
+        'ffmpeg_available': False,
+        'ffprobe_available': bool(ffprobe_path),
+        'broad_transcoding_available': False,
+        'ffmpeg_path': ffmpeg_path,
+        'ffprobe_path': ffprobe_path,
+        'ffmpeg_version': '',
+        'supported_extensions': supported_extensions,
+        'direct_transcription_extensions': source_extensions,
+        'recommended_container_packages': ['ffmpeg', 'ffprobe'],
+        'message': 'FFmpeg was not found in this app runtime; audio uploads use Azure Speech source-file fallback only.',
+    }
+
+    if ffmpeg_path:
+        capabilities['ffmpeg_available'] = True
+        try:
+            ffmpeg_result = subprocess.run(
+                [ffmpeg_path, '-hide_banner', '-version'],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=5,
+            )
+            version_line = (ffmpeg_result.stdout or '').splitlines()[0] if ffmpeg_result.stdout else ''
+            capabilities.update({
+                'broad_transcoding_available': True,
+                'ffmpeg_version': version_line,
+                'message': 'FFmpeg runtime detected; broad audio transcoding is available before Azure Speech transcription.',
+            })
+        except Exception as runtime_error:
+            capabilities['message'] = f"FFmpeg was found, but runtime validation failed: {str(runtime_error)[:220]}"
+
+    _AUDIO_RUNTIME_CAPABILITIES_CACHE = capabilities
+    return dict(capabilities)
+
 
 def _split_audio_file(input_path: str, chunk_seconds: int = 540) -> List[str]:
     """
@@ -7382,7 +7453,8 @@ def _split_audio_file(input_path: str, chunk_seconds: int = 540) -> List[str]:
                 f='segment',
                 segment_time=chunk_seconds,
                 reset_timestamps=1,
-                map='0'
+                map='0:a:0',
+                ac='1'
             )
             .run(quiet=True, overwrite_output=True)
         )
@@ -7396,6 +7468,45 @@ def _split_audio_file(input_path: str, chunk_seconds: int = 540) -> List[str]:
         raise RuntimeError(f"No chunks produced by ffmpeg for file '{input_path}'")
     print(f"Produced {len(chunks)} WAV chunks: {chunks}")
     return chunks
+
+
+def _is_missing_ffmpeg_error(error) -> bool:
+    error_text = str(error or '').lower()
+    missing_binary_markers = (
+        'no such file or directory',
+        'the system cannot find the file specified',
+        'cannot find the file specified',
+        'not recognized as an internal or external command',
+    )
+    return 'ffmpeg' in error_text and any(marker in error_text for marker in missing_binary_markers)
+
+
+def _transcribe_audio_with_fast_api(audio_path, upload_filename, content_type, settings, endpoint, locale):
+    url = f"{endpoint}/speechtotext/transcriptions:transcribe?api-version=2024-11-15"
+    with open(audio_path, 'rb') as audio_f:
+        files = {
+            'audio': (upload_filename, audio_f, content_type),
+            'definition': (None, json.dumps({'locales': [locale]}), 'application/json')
+        }
+        if settings.get("speech_service_authentication_type") == "managed_identity":
+            credential = DefaultAzureCredential()
+            token = credential.get_token(cognitive_services_scope)
+            headers = {'Authorization': f'Bearer {token.token}'}
+        else:
+            key = settings.get("speech_service_key", "")
+            headers = {'Ocp-Apim-Subscription-Key': key}
+
+        resp = requests.post(url, headers=headers, files=files)
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"[Error] HTTP error for {audio_path}: {e}")
+        raise
+
+    result = resp.json()
+    phrases = result.get('combinedPhrases', [])
+    print(f"[Debug] Received {len(phrases)} phrases")
+    return [p.get('text', '').strip() for p in phrases if p.get('text')]
 
 # Azure Speech SDK helper to get speech config with fresh token
 def _get_speech_config(settings, endpoint: str, locale: str):
@@ -7476,15 +7587,27 @@ def process_audio_document(
     if file_size > 300 * 1024 * 1024:
         raise ValueError("Audio exceeds 300 MB limit.")
 
-    # 2) split to WAV chunks
-    update_callback(status="Preparing audio for transcription…")
-    chunk_paths = _split_audio_file(temp_file_path, chunk_seconds=540)
-
-    # 3) transcribe each WAV chunk
+    # 2) prepare speech configuration
     settings = get_settings()
     endpoint = settings.get("speech_service_endpoint", "").rstrip('/')
     locale = settings.get("speech_service_locale", "en-US")
 
+    # 3) split to WAV chunks unless fast transcription can use the source file directly
+    update_callback(status="Preparing audio for transcription…")
+    chunk_paths = []
+    use_source_audio_for_fast_api = False
+    try:
+        chunk_paths = _split_audio_file(temp_file_path, chunk_seconds=540)
+    except RuntimeError as split_error:
+        if AZURE_ENVIRONMENT not in ("usgovernment", "custom") and _is_missing_ffmpeg_error(split_error):
+            use_source_audio_for_fast_api = True
+            print(
+                "[Warning] FFmpeg executable unavailable; using source audio with Azure Speech fast transcription API."
+            )
+        else:
+            raise
+
+    # 4) transcribe audio
     all_phrases: List[str] = []
 
     # Fast Transcription API not yet available in sovereign clouds, so use SDK
@@ -7628,37 +7751,31 @@ def process_audio_document(
 
     else:
         # Use the fast-transcription API if not in sovereign or custom cloud
-        url = f"{endpoint}/speechtotext/transcriptions:transcribe?api-version=2024-11-15"
-        for idx, chunk_path in enumerate(chunk_paths, start=1):
-            update_callback(current_file_chunk=idx, status=f"Transcribing chunk {idx}/{len(chunk_paths)}…")
-            print(f"[Debug] Transcribing WAV chunk: {chunk_path}")
+        if use_source_audio_for_fast_api:
+            update_callback(current_file_chunk=1, status="Transcribing audio with Azure Speech…")
+            print(f"[Debug] Transcribing source audio: {temp_file_path}")
+            all_phrases += _transcribe_audio_with_fast_api(
+                temp_file_path,
+                original_filename,
+                _get_content_type(original_filename or temp_file_path),
+                settings,
+                endpoint,
+                locale
+            )
+        else:
+            for idx, chunk_path in enumerate(chunk_paths, start=1):
+                update_callback(current_file_chunk=idx, status=f"Transcribing chunk {idx}/{len(chunk_paths)}…")
+                print(f"[Debug] Transcribing WAV chunk: {chunk_path}")
+                all_phrases += _transcribe_audio_with_fast_api(
+                    chunk_path,
+                    os.path.basename(chunk_path),
+                    'audio/wav',
+                    settings,
+                    endpoint,
+                    locale
+                )
 
-            with open(chunk_path, 'rb') as audio_f:
-                files = {
-                    'audio': (os.path.basename(chunk_path), audio_f, 'audio/wav'),
-                    'definition': (None, json.dumps({'locales':[locale]}), 'application/json')
-                }
-                if settings.get("speech_service_authentication_type") == "managed_identity":
-                    credential = DefaultAzureCredential()
-                    token = credential.get_token(cognitive_services_scope)
-                    headers = {'Authorization': f'Bearer {token.token}'}
-                else:
-                    key = settings.get("speech_service_key", "")
-                    headers = {'Ocp-Apim-Subscription-Key': key}
-
-                resp = requests.post(url, headers=headers, files=files)
-            try:
-                resp.raise_for_status()
-            except Exception as e:
-                print(f"[Error] HTTP error for {chunk_path}: {e}")
-                raise
-
-            result = resp.json()
-            phrases = result.get('combinedPhrases', [])
-            print(f"[Debug] Received {len(phrases)} phrases")
-            all_phrases += [p.get('text','').strip() for p in phrases if p.get('text')]
-
-    # 4) cleanup WAV chunks
+    # 5) cleanup WAV chunks
     for p in chunk_paths:
         try:
             os.remove(p)
@@ -7666,7 +7783,7 @@ def process_audio_document(
         except Exception as e:
             print(f"[Warning] Could not remove chunk {p}: {e}")
 
-    # 5) stitch and save transcript chunks
+    # 6) stitch and save transcript chunks
     full_text = ' '.join(all_phrases).strip()
     words = full_text.split()
     chunk_settings = get_chunk_size_config(settings)

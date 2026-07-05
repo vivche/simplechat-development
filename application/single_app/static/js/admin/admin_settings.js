@@ -19,6 +19,7 @@ let externalLinksMenuName = window.externalLinksMenuName || 'External Links';
 let agentsPagePromotedPopularAgents = Array.isArray(window.agentsPagePromotedPopularAgents)
     ? window.agentsPagePromotedPopularAgents
     : [];
+let enableSemanticKernel = Boolean(window.enableSemanticKernel);
 let releaseNotificationsRegistration = window.releaseNotificationsRegistration || {
     registered: false,
     name: '',
@@ -387,6 +388,19 @@ function renderPromotedPopularAgents() {
 
 async function loadPromotedPopularAvailableAgents() {
     if (!promotedPopularAgentsSelect) {
+        return;
+    }
+    if (!enableSemanticKernel) {
+        agentsPagePromotedAvailableAgents = [];
+        setPromotedPopularLoadError('');
+        promotedPopularAgentsSelect.textContent = '';
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'Enable Agents to load available agents';
+        promotedPopularAgentsSelect.appendChild(option);
+        if (promotedPopularAgentsAddButton) {
+            promotedPopularAgentsAddButton.disabled = true;
+        }
         return;
     }
     try {
@@ -2906,7 +2920,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         event.preventDefault();
-        openAdminSettingsTab(trigger.getAttribute('data-open-admin-tab'));
+        openAdminSettingsTab(
+            trigger.getAttribute('data-open-admin-tab'),
+            trigger.getAttribute('data-open-admin-section') || ''
+        );
     });
 
     window.addEventListener("popstate", activateTabFromHash);
@@ -6055,12 +6072,23 @@ function setupTestButtons() {
             }
 
             const enableApim = document.getElementById('enable_gpt_apim').checked;
+            const selectedVisionOption = getSelectedVisionModelOption();
 
             const payload = {
                 test_type: 'multimodal_vision',
                 enable_apim: enableApim,
                 vision_model: visionModel
             };
+
+            if (!enableApim && selectedVisionOption?.dataset?.endpointId && selectedVisionOption?.dataset?.modelId) {
+                payload.multi_endpoint = {
+                    endpoint_id: selectedVisionOption.dataset.endpointId,
+                    model_id: selectedVisionOption.dataset.modelId,
+                    provider: selectedVisionOption.dataset.provider || '',
+                    model_name: selectedVisionOption.dataset.modelName || '',
+                    deployment_name: visionModel
+                };
+            }
 
             if (enableApim) {
                 payload.apim = {
@@ -6934,56 +6962,76 @@ const visionToggle = document.getElementById('enable_multimodal_vision');
 const visionModelDiv = document.getElementById('multimodal_vision_model_settings');
 const visionSelect = document.getElementById('multimodal_vision_model');
 
+function isVisionCapableModelName(modelName) {
+    const modelNameLower = (modelName || '').toLowerCase();
+    return (
+        modelNameLower.includes('vision') ||
+        modelNameLower.includes('gpt-4o') ||
+        modelNameLower.includes('gpt-4.1') ||
+        modelNameLower.includes('gpt-4.5') ||
+        modelNameLower.includes('gpt-5') ||
+        /^o\d+/.test(modelNameLower) ||
+        modelNameLower.includes('o1-') ||
+        modelNameLower.includes('o3-')
+    );
+}
+
+function getSelectedVisionModelOption() {
+    if (!visionSelect) {
+        return null;
+    }
+
+    return visionSelect.options[visionSelect.selectedIndex] || null;
+}
+
 function populateVisionModels() {
     if (!visionSelect) return;
-  
-    // remember previously chosen value
-    const prev = visionSelect.getAttribute('data-prev') || '';
 
-    // clear out old options (except the placeholder)
+    const prev = visionSelect.getAttribute('data-prev') || '';
     visionSelect.innerHTML = '<option value="">Select a vision-capable model...</option>';
 
-    if (document.getElementById('enable_gpt_apim').checked) {
-        // use comma-separated APIM deployments
-        const text = document.getElementById('azure_apim_gpt_deployment').value || '';
-        text.split(',')
-                .map(s => s.trim())
-                .filter(s => s)
-                .forEach(d => {
-                    const opt = new Option(d, d);
-                    visionSelect.add(opt);
-                });
-    } else {
-        // use direct GPT selected deployments - filter for vision-capable models
-        (window.gptSelected || []).forEach(m => {
-            // Only include models with vision capabilities
-            // Vision-enabled models per Azure OpenAI docs:
-            // - o-series reasoning models (o1, o3, etc.)
-            // - GPT-5 series
-            // - GPT-4.1 series
-            // - GPT-4.5
-            // - GPT-4o series (gpt-4o, gpt-4o-mini)
-            // - GPT-4 vision models (gpt-4-vision, gpt-4-turbo-vision)
-            const modelNameLower = (m.modelName || '').toLowerCase();
-            const isVisionCapable =
-                modelNameLower.includes('vision') ||
-                modelNameLower.includes('gpt-4o') ||
-                modelNameLower.includes('gpt-4.1') ||
-                modelNameLower.includes('gpt-4.5') ||
-                modelNameLower.includes('gpt-5') ||
-                modelNameLower.match(/^o\d+/) ||
-                modelNameLower.includes('o1-') ||
-                modelNameLower.includes('o3-');
+    // Prefer multi-endpoint model list when available
+    const multiEnabled = window.enableMultiModelEndpoints === true;
+    const endpoints = Array.isArray(window.modelEndpoints) ? window.modelEndpoints : [];
 
-            if (isVisionCapable) {
+    if (multiEnabled && endpoints.length > 0) {
+        endpoints
+            .filter(ep => ep && ep.enabled)
+            .forEach(ep => {
+                (ep.models || [])
+                    .filter(m => m && m.enabled && isVisionCapableModelName(m.modelName || m.displayName))
+                    .forEach(m => {
+                        const value = m.deploymentName;
+                        const label = `${m.displayName || m.deploymentName} (${m.modelName})`;
+                        const opt = new Option(label, value);
+                        opt.dataset.endpointId = ep.id || '';
+                        opt.dataset.modelId = m.id || '';
+                        opt.dataset.provider = ep.provider || '';
+                        opt.dataset.modelName = m.modelName || '';
+                        visionSelect.add(opt);
+                    });
+            });
+    } else if (document.getElementById('enable_gpt_apim') && document.getElementById('enable_gpt_apim').checked) {
+        // Legacy APIM-based GPT configuration
+        const text = (document.getElementById('azure_apim_gpt_deployment')?.value || '');
+        text.split(',')
+            .map(s => s.trim())
+            .filter(s => s && isVisionCapableModelName(s))
+            .forEach(d => {
+                const opt = new Option(d, d);
+                visionSelect.add(opt);
+            });
+    } else {
+        // Legacy single-endpoint GPT configuration using window.gptSelected
+        (window.gptSelected || [])
+            .filter(m => isVisionCapableModelName(m.modelName))
+            .forEach(m => {
                 const label = `${m.deploymentName} (${m.modelName})`;
                 const opt = new Option(label, m.deploymentName);
                 visionSelect.add(opt);
-            }
-        });
+            });
     }
 
-    // restore previous
     if (prev) {
         visionSelect.value = prev;
     }
@@ -8455,7 +8503,7 @@ function setupLatestFeatureImageModal() {
     });
 }
 
-function openAdminSettingsTab(targetHash) {
+function openAdminSettingsTab(targetHash, sectionId = '') {
     if (!targetHash) {
         return;
     }
@@ -8463,6 +8511,12 @@ function openAdminSettingsTab(targetHash) {
     const normalizedHash = targetHash.startsWith('#') ? targetHash : `#${targetHash}`;
     history.pushState(null, null, normalizedHash);
     activateTabFromHash();
+
+    if (sectionId) {
+        setTimeout(() => {
+            document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 150);
+    }
 }
 
 window.openAdminSettingsTab = openAdminSettingsTab;

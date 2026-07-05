@@ -1,5 +1,6 @@
 <!-- templates/workspace.html -->
 {% extends "base.html" %}
+{% from "_supported_file_types_modal.html" import supported_file_types_modal %}
 {% block title %} Personal Workspace - {{ app_settings.app_title }} {% endblock %}
 {% block head %}
    <link rel="stylesheet" href="/static/css/simplemde.min.css" />
@@ -619,7 +620,7 @@
             {% endif %}
           {% endif %}
           {% if settings.allow_user_workflows %}
-            <option value="workflows-tab-btn">Personal Workflows</option>
+            <option value="workflows-tab-btn">Workflows</option>
           {% endif %}
           {% if settings.allow_user_custom_endpoints and settings.enable_multi_model_endpoints %}
             <option value="endpoints-tab-btn">Your Endpoints</option>
@@ -636,6 +637,7 @@
           id="documents-tab-btn"
           data-bs-toggle="tab"
           data-bs-target="#documents-tab"
+          title="Upload, search, organize, tag, and manage personal files used for grounded chat after processing and indexing."
           type="button"
           role="tab"
           aria-controls="documents-tab"
@@ -651,6 +653,7 @@
           id="sync-tab-btn"
           data-bs-toggle="tab"
           data-bs-target="#sync-tab"
+          title="Configure external file sources that bring approved files into this workspace and run them through the document processing pipeline."
           type="button"
           role="tab"
           aria-controls="sync-tab"
@@ -667,6 +670,7 @@
           id="identities-tab-btn"
           data-bs-toggle="tab"
           data-bs-target="#identities-tab"
+          title="Manage reusable authentication profiles for File Sync and Actions so credentials stay scoped and resolved server-side."
           type="button"
           role="tab"
           aria-controls="identities-tab"
@@ -682,6 +686,7 @@
           id="prompts-tab-btn"
           data-bs-toggle="tab"
           data-bs-target="#prompts-tab"
+          title="Create, search, view, and reuse prompt templates for consistent chat instructions."
           type="button"
           role="tab"
           aria-controls="prompts-tab"
@@ -698,6 +703,7 @@
               id="agents-tab-btn"
               data-bs-toggle="tab"
               data-bs-target="#agents-tab"
+              title="Reusable, specialized AI assistants that combine instructions, approved knowledge, and optional actions. Actions are tasks an agent is allowed to perform."
               type="button"
               role="tab"
               aria-controls="agents-tab"
@@ -714,6 +720,7 @@
                 id="plugins-tab-btn"
                 data-bs-toggle="tab"
                 data-bs-target="#plugins-tab"
+                title="Configure governed tools that agents can call, such as APIs, databases, or other connected systems."
                 type="button"
                 role="tab"
                 aria-controls="plugins-tab"
@@ -732,12 +739,13 @@
             id="workflows-tab-btn"
             data-bs-toggle="tab"
             data-bs-target="#workflows-tab"
+            title="Save repeatable personal tasks that run manually or on a schedule using a selected model or agent, with optional document actions and run history."
             type="button"
             role="tab"
             aria-controls="workflows-tab"
             aria-selected="false"
           >
-            Personal Workflows
+            Workflows
           </button>
         </li>
       {% endif %}
@@ -748,6 +756,7 @@
             id="endpoints-tab-btn"
             data-bs-toggle="tab"
             data-bs-target="#endpoints-tab"
+            title="Manage model endpoints available to personal agents and workflows alongside admin-managed global endpoints."
             type="button"
             role="tab"
             aria-controls="endpoints-tab"
@@ -773,12 +782,14 @@
 
           <!-- Document Upload Form -->
           <div class="mb-3">
-            <div id="upload-area" class="upload-area text-center p-4 border border-2 border-dashed rounded bg-light" style="cursor:pointer; transition: border-color 0.2s;">
+            <div id="upload-area" class="upload-area workspace-upload-area text-center py-2 px-3 border border-2 border-dashed rounded bg-light" style="cursor:pointer; transition: border-color 0.2s;">
               <input type="file" id="workspace-file-input" multiple style="display:none;" />
               <div class="upload-area-content">
-                <i class="bi bi-cloud-arrow-up display-4 text-primary mb-2"></i>
+                <i class="bi bi-cloud-arrow-up text-primary mb-1"></i>
                 <div class="fw-bold">Drag & drop files here or <span class="text-primary text-decoration-underline">click to browse</span></div>
-                <div class="small text-muted mt-1">{{ allowed_extensions }}</div>
+                <button type="button" class="btn btn-link btn-sm p-0 mt-1 workspace-upload-supported-types-trigger" data-bs-toggle="modal" data-bs-target="#workspaceSupportedFileTypesModal">
+                  View all supported file types
+                </button>
               </div>
             </div>
             <span id="upload-status" class="ms-2 text-muted small" style="display:none;"></span>
@@ -1401,6 +1412,7 @@
   {% if settings.allow_user_custom_endpoints and settings.enable_multi_model_endpoints and workspace_governance.user_endpoints %}
   {% include '_multiendpoint_modal.html' %}
   {% endif %}
+  {{ supported_file_types_modal('workspaceSupportedFileTypesModal', 'Supported file types', allowed_extension_categories) }}
   <!-- Shared Item View Modal (read-only details for agents/actions) -->
   <div class="modal fade" id="item-view-modal" tabindex="-1" aria-labelledby="item-view-modal-label" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -1447,7 +1459,17 @@
             <input type="text" class="form-control" id="workflow-description" maxlength="240" placeholder="Optional summary for the workflow list." />
           </div>
           <div class="mb-3">
-            <label for="workflow-task-prompt" class="form-label">Task Prompt</label>
+            <label for="workflow-task-brief" class="form-label">Task Brief</label>
+            <textarea class="form-control" id="workflow-task-brief" rows="3" placeholder="Briefly describe what this workflow should accomplish."></textarea>
+            <div class="d-flex align-items-center gap-2 mt-2">
+              <button type="button" class="btn btn-outline-primary btn-sm" id="workflow-draft-instructions-btn">
+                <i class="bi bi-magic me-1" aria-hidden="true"></i>Draft Workflow Instructions
+              </button>
+              <span class="text-muted small" id="workflow-draft-instructions-status" aria-live="polite"></span>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label for="workflow-task-prompt" class="form-label">Workflow Instructions</label>
             <textarea class="form-control" id="workflow-task-prompt" rows="7" placeholder="Describe exactly what this workflow should do each time it runs." required></textarea>
             <div class="form-text">Each run appends this prompt to the workflow conversation as a new user message.</div>
           </div>
@@ -2625,7 +2647,9 @@
   <script type="module" src="{{ url_for('static', filename='js/workspace/workspace-identities.js') }}?v={{ config['VERSION'] }}"></script>
   <script type="module" src="{{ url_for('static', filename='js/workspace/workspace-file-sync.js') }}?v={{ config['VERSION'] }}"></script>
   {% endif %}
+  {% if settings.per_user_semantic_kernel and settings.enable_semantic_kernel and settings.allow_user_plugins and workspace_governance.user_actions %}
   <script type="module" src="{{ url_for('static', filename='js/plugin_modal_stepper.js') }}?v={{ config['VERSION'] }}"></script>
+  {% endif %}
   <script src="{{ url_for('static', filename='js/workspace_sidebar_nav.js') }}?v={{ config['VERSION'] }}"></script>
   <script src="{{ url_for('static', filename='js/workspace_section_switcher.js') }}?v={{ config['VERSION'] }}"></script>
   <script type="module" src="{{ url_for('static', filename='js/workspace/workspace-migration.js') }}?v={{ config['VERSION'] }}"></script>

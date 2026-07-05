@@ -965,6 +965,18 @@ function isDocumentDeleteModalReady() {
     );
 }
 
+function releaseDocumentDeleteModalFocus() {
+    const activeElement = document.activeElement;
+    if (activeElement && documentDeleteModalElement && documentDeleteModalElement.contains(activeElement) && typeof activeElement.blur === "function") {
+        activeElement.blur();
+    }
+}
+
+function hideDocumentDeleteModal() {
+    releaseDocumentDeleteModalFocus();
+    documentDeleteModal.hide();
+}
+
 function promptDocumentDeleteMode(documentCount = 1) {
     if (!isDocumentDeleteModalReady()) {
         showDocumentDeleteFeedback("Delete confirmation dialog is unavailable. Refresh the page and try again.");
@@ -1001,7 +1013,7 @@ function promptDocumentDeleteMode(documentCount = 1) {
                 return;
             }
             selectedValue = value;
-            documentDeleteModal.hide();
+            hideDocumentDeleteModal();
         };
 
         const handleHidden = () => finalize();
@@ -1075,7 +1087,7 @@ function promptSyncedDocumentDeleteAction(deleteInfo) {
                 return;
             }
             selectedValue = value;
-            documentDeleteModal.hide();
+            hideDocumentDeleteModal();
         };
 
         const handleHidden = () => finalize();
@@ -1154,11 +1166,11 @@ function promptConversationLinkedDocumentDeleteAction(deleteInfo) {
         const handleOpenConversation = () => {
             window.open(conversationUrl, "_blank", "noopener");
             selectedValue = false;
-            documentDeleteModal.hide();
+            hideDocumentDeleteModal();
         };
         const handleDeleteWorkspaceCopy = () => {
             selectedValue = true;
-            documentDeleteModal.hide();
+            hideDocumentDeleteModal();
         };
 
         documentDeleteModalElement.addEventListener("hidden.bs.modal", handleHidden);
@@ -1560,7 +1572,7 @@ if (fileInput && uploadArea && uploadStatusSpan) {
     // Click on area triggers file input
     uploadArea.addEventListener("click", (e) => {
         // Only trigger if not clicking the hidden input itself
-        if (e.target !== fileInput) {
+        if (e.target !== fileInput && !e.target.closest(".workspace-upload-supported-types-trigger")) {
             fileInput.click();
         }
     });
