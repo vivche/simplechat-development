@@ -24,6 +24,13 @@ def _log(message, level=logging.INFO):
         logging.getLogger(__name__).log(level, message)
 
 
+# Setting key that selects where briefing input comes from. 'sample' uses the bundled
+# POC fixtures; 'graph' pulls the signed-in user's live mail/calendar/Teams via Microsoft
+# Graph (Phase 2). Defaults to 'sample' so the POC keeps working with no configuration.
+DATA_SOURCE_SETTING = 'chief_of_staff_data_source'
+DEFAULT_DATA_SOURCE = 'sample'
+
+
 def load_sample_briefing_data():
     """Load the POC fixture data for emails, meetings, and Teams messages.
 
@@ -47,6 +54,57 @@ def load_sample_briefing_data():
             )
             data[key] = []
     return data
+
+
+def load_graph_briefing_data(user_id):
+    """Load live briefing input for a user from Microsoft Graph (Phase 2).
+
+    Should return the same dict shape as load_sample_briefing_data():
+    {'emails': [...], 'meetings': [...], 'teams_messages': [...]}.
+
+    Implementation plan (Phase 2):
+      - Acquire a delegated Graph token for the signed-in user (on-behalf-of),
+        with scopes Mail.Read, Calendars.Read, Chat.Read.
+      - GET /me/messages (recent/unread, windowed to the last 24-48h).
+      - GET /me/calendarView (today + upcoming) for meetings.
+      - GET /me/chats/.../messages for Teams.
+      - Normalize each source into the same lightweight fields the sample fixtures use
+        so _build_briefing_prompt and the LLM prompt need no changes.
+    """
+    raise NotImplementedError(
+        "Microsoft Graph data source for Chief of Staff is not implemented yet (Phase 2)."
+    )
+
+
+def load_briefing_data(user_id=None):
+    """Resolve the configured data source and return the day's input data.
+
+    Reads the 'chief_of_staff_data_source' setting: 'sample' (default) uses the bundled
+    POC fixtures; 'graph' pulls the signed-in user's live data. If the live source is
+    selected but unavailable, falls back to sample data so the dashboard still renders.
+    """
+    source = DEFAULT_DATA_SOURCE
+    try:
+        from functions_settings import get_settings
+        settings = get_settings()
+        source = (settings.get(DATA_SOURCE_SETTING) or DEFAULT_DATA_SOURCE).lower()
+    except Exception as exc:
+        _log(
+            f"Chief of Staff: could not read data-source setting, defaulting to sample: {exc}",
+            level=logging.WARNING,
+        )
+
+    if source == 'graph':
+        try:
+            return load_graph_briefing_data(user_id)
+        except Exception as exc:
+            _log(
+                f"Chief of Staff: Graph data source unavailable, falling back to sample: {exc}",
+                level=logging.WARNING,
+            )
+            return load_sample_briefing_data()
+
+    return load_sample_briefing_data()
 
 
 def _build_briefing_prompt(data):
@@ -105,12 +163,15 @@ BRIEFING_SYSTEM_PROMPT = (
 )
 
 
-def generate_briefing():
-    """Generate the Chief of Staff briefing from sample data using the configured LLM.
+def generate_briefing(user_id=None):
+    """Generate the Chief of Staff briefing using the configured data source and LLM.
 
-    Returns a dict: {'summary': str, 'action_items': list, 'source_counts': dict}.
+    The input data comes from load_briefing_data() (sample fixtures or live Microsoft
+    Graph, per the 'chief_of_staff_data_source' setting). Returns a dict with keys:
+    summary, priorities, action_items, commitments, meeting_briefings, follow_ups,
+    source_counts.
     """
-    data = load_sample_briefing_data()
+    data = load_briefing_data(user_id)
     source_counts = {
         'emails': len(data.get('emails', [])),
         'meetings': len(data.get('meetings', [])),

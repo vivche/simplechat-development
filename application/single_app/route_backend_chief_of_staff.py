@@ -18,9 +18,10 @@ def register_route_backend_chief_of_staff(bp):
     @user_required
     @enabled_required('enable_chief_of_staff_dashboard')
     def chief_of_staff_briefing():
-        """Return the AI Chief of Staff briefing generated from POC sample data."""
+        """Return the AI Chief of Staff briefing generated from the configured data source."""
         try:
-            briefing = generate_briefing()
+            user_id = get_current_user_id()
+            briefing = generate_briefing(user_id=user_id)
             return jsonify({'success': True, 'briefing': briefing})
         except Exception as exc:
             log_event(

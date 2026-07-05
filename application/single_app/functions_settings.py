@@ -1027,6 +1027,9 @@ def get_settings(use_cosmos=False, include_source=False):
 
         # AI Chief of Staff (POC)
         'enable_chief_of_staff_dashboard': False,
+        # Data source for the briefing: 'sample' (bundled POC fixtures) or 'graph'
+        # (live Microsoft Graph mail/calendar/Teams, Phase 2).
+        'chief_of_staff_data_source': 'sample',
 
         # Support Menu
         'enable_support_menu': False,
