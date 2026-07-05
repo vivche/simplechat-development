@@ -9,7 +9,7 @@ import requests
 from flask import g, has_request_context
 from requests import RequestException
 
-from functions_authentication import get_current_user_info, get_valid_access_token_for_plugins
+from functions_authentication import get_current_user_info, get_graph_base_url, get_valid_access_token_for_plugins
 from functions_debug import debug_print
 from semantic_kernel.functions import kernel_function
 from semantic_kernel.functions.kernel_plugin import KernelPlugin
@@ -48,6 +48,25 @@ from semantic_kernel_plugins.base_plugin import BasePlugin
 from semantic_kernel_plugins.plugin_invocation_logger import plugin_function_logger
 
 
+def _resolve_default_graph_endpoint():
+    """Resolve the deployment's Graph host root (sovereign cloud aware).
+
+    Uses SimpleChat's get_graph_base_url(), which honors CUSTOM_GRAPH_URL_VALUE and
+    AZURE_ENVIRONMENT (e.g. 'https://graph.microsoft.us/v1.0' for GCC High). The plugin
+    appends '/v1.0/...' paths itself, so the trailing '/v1.0' is stripped to leave the host
+    root. Falls back to the commercial default if the base URL cannot be resolved.
+    """
+    try:
+        base_url = (get_graph_base_url() or "").strip().rstrip("/")
+    except Exception:
+        return MSGRAPH_DEFAULT_ENDPOINT
+    if not base_url:
+        return MSGRAPH_DEFAULT_ENDPOINT
+    if base_url.lower().endswith("/v1.0"):
+        base_url = base_url[: -len("/v1.0")].rstrip("/")
+    return base_url or MSGRAPH_DEFAULT_ENDPOINT
+
+
 class MSGraphPlugin(BasePlugin):
     DEFAULT_ENDPOINT = MSGRAPH_DEFAULT_ENDPOINT
     DEFAULT_TIMEOUT_SECONDS = 30
@@ -59,7 +78,7 @@ class MSGraphPlugin(BasePlugin):
         super().__init__(manifest)
         self.manifest = manifest or {}
         self._metadata = self.manifest.get("metadata", {})
-        self._endpoint = str(self.manifest.get("endpoint") or self.DEFAULT_ENDPOINT).rstrip("/")
+        self._endpoint = str(self.manifest.get("endpoint") or _resolve_default_graph_endpoint()).rstrip("/")
         additional_fields = self.manifest.get("additionalFields") if isinstance(self.manifest.get("additionalFields"), dict) else {}
         scope_overrides = self.manifest.get("scopes") or self._metadata.get("scopes") or {}
         self._scope_overrides = scope_overrides if isinstance(scope_overrides, dict) else {}

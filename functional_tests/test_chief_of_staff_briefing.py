@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Functional test for the AI Chief of Staff POC dashboard.
-Version: 0.250.020
+Version: 0.250.021
 Implemented in: 0.250.015
 
 This test ensures that:

@@ -123,9 +123,9 @@ These are covered by `functional_tests/test_chief_of_staff_briefing.py`
 
 Per [README.md](README.md) §2, a GCC-H-registered app can only reach mailboxes/Teams in the
 **same GCC-H tenant** (sovereign `.us` Graph endpoints). It cannot read commercial
-`@microsoft.com` data. The Graph provider is cloud-agnostic: it resolves the correct endpoint
-via SimpleChat's `get_graph_base_url()` (which honors `CUSTOM_GRAPH_URL_VALUE` and
-`AZURE_ENVIRONMENT`), so GCC High automatically targets `https://graph.microsoft.us` rather
-than the commercial `https://graph.microsoft.com`. The resolved host root is passed to
-`MSGraphPlugin` via its manifest `endpoint`; without this the plugin would default to the
-commercial endpoint.
+`@microsoft.com` data. The Graph provider is cloud-agnostic: `MSGraphPlugin` now resolves its
+default endpoint from SimpleChat's `get_graph_base_url()` (which honors `CUSTOM_GRAPH_URL_VALUE`
+and `AZURE_ENVIRONMENT`), so GCC High automatically targets `https://graph.microsoft.us` rather
+than the commercial `https://graph.microsoft.com`. This was a general plugin bug (not specific
+to Chief of Staff) — see [MSGRAPH_SOVEREIGN_ENDPOINT_FIX.md](../explanation/fixes/MSGRAPH_SOVEREIGN_ENDPOINT_FIX.md).
+

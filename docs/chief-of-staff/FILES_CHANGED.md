@@ -51,6 +51,7 @@ All changes are additive and gated behind the `enable_chief_of_staff_dashboard` 
 | `application/single_app/templates/admin_settings.html` | Adds the "AI Chief of Staff (POC)" toggle card in the General tab. |
 | `application/single_app/templates/_sidebar_nav.html` | Adds the sidebar "Chief of Staff" link, shown only when the flag is on. |
 | `application/single_app/config.py` | Version bump. |
+| `application/single_app/semantic_kernel_plugins/msgraph_plugin.py` | **General (non-feature) fix.** `MSGraphPlugin` now resolves its default Graph endpoint from `get_graph_base_url()` so sovereign clouds (e.g. GCC High → `graph.microsoft.us`) work without an explicit manifest endpoint. Previously it defaulted to the commercial `graph.microsoft.com`. See [MSGRAPH_SOVEREIGN_ENDPOINT_FIX.md](../explanation/fixes/MSGRAPH_SOVEREIGN_ENDPOINT_FIX.md). |
 
 ---
 
