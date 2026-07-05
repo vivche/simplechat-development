@@ -180,6 +180,31 @@ def _graph_value(result):
     return []
 
 
+def _resolve_graph_endpoint():
+    """Resolve the Microsoft Graph host root for this deployment (GCC-aware).
+
+    SimpleChat's get_graph_base_url() honors CUSTOM_GRAPH_URL_VALUE and AZURE_ENVIRONMENT,
+    returning e.g. 'https://graph.microsoft.us/v1.0' for GCC High. MSGraphPlugin expects the
+    host root (it appends '/v1.0/...' itself), so strip the trailing '/v1.0'. Returns None to
+    let the plugin use its own default if the base URL can't be resolved.
+    """
+    try:
+        from functions_authentication import get_graph_base_url
+        base_url = (get_graph_base_url() or '').strip().rstrip('/')
+    except Exception as exc:
+        _log(
+            f"Chief of Staff: could not resolve Graph base URL, using plugin default: {exc}",
+            level=logging.WARNING,
+        )
+        return None
+
+    if not base_url:
+        return None
+    if base_url.lower().endswith('/v1.0'):
+        base_url = base_url[:-len('/v1.0')].rstrip('/')
+    return base_url or None
+
+
 def _load_graph_teams_messages(plugin):
     """Best-effort fetch of the user's recent Teams chat messages via the Graph plugin."""
     teams_messages = []
@@ -229,7 +254,10 @@ def load_graph_briefing_data(user_id):
     # want to require for the pure data/parsing paths in this module.
     from semantic_kernel_plugins.msgraph_plugin import MSGraphPlugin
 
-    plugin = MSGraphPlugin()
+    # Point the plugin at the correct sovereign Graph endpoint (e.g. graph.microsoft.us for
+    # GCC High); without a manifest the plugin would default to the commercial endpoint.
+    graph_endpoint = _resolve_graph_endpoint()
+    plugin = MSGraphPlugin(manifest={'endpoint': graph_endpoint} if graph_endpoint else None)
 
     now = datetime.now(timezone.utc)
     window_start = (now - timedelta(hours=GRAPH_LOOKBACK_HOURS)).strftime('%Y-%m-%dT%H:%M:%SZ')
