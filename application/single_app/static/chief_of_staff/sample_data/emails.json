@@ -1,0 +1,26 @@
+[
+  {
+    "id": "email-1",
+    "from": "Priya Nair <priya.nair@contoso.gov>",
+    "to": "You",
+    "received": "2025-06-09T08:12:00Z",
+    "subject": "Delivery review slipping - need decision on scope",
+    "body": "The Q3 delivery review is at risk because the data migration workstream is two weeks behind. I need you to decide by Wednesday whether we cut the reporting module from this release or push the go-live date. Please also confirm who owns the customer comms if we slip."
+  },
+  {
+    "id": "email-2",
+    "from": "Marcus Webb <marcus.webb@contoso.gov>",
+    "to": "You",
+    "received": "2025-06-09T09:45:00Z",
+    "subject": "Re: Security sign-off for release 2.4",
+    "body": "Security review is complete with two low findings. We can proceed to production once you approve the exception for the legacy TLS endpoint. I'll need your written approval before Friday's change window."
+  },
+  {
+    "id": "email-3",
+    "from": "Dana Ortiz <dana.ortiz@contoso.gov>",
+    "to": "You",
+    "received": "2025-06-09T11:20:00Z",
+    "subject": "New team member onboarding",
+    "body": "Just a heads up that Sam joins the delivery team Monday. Can you set up their access to the project board and add them to the standup invite? No rush, but before their first day would be ideal."
+  }
+]

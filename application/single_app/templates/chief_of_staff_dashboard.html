@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}
+  AI Chief of Staff - {{ app_settings.app_title }}
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4" id="chief-of-staff-app">
+  <div class="d-flex align-items-center justify-content-between flex-wrap mb-3">
+    <div>
+      <h1 class="h3 mb-1"><i class="bi bi-clipboard2-check me-2"></i>AI Chief of Staff</h1>
+      <p class="text-muted mb-0">Your daily briefing across email, meetings, and Teams. <span class="badge bg-secondary">POC - sample data</span></p>
+    </div>
+    <button type="button" class="btn btn-outline-primary" id="cos-refresh-btn">
+      <i class="bi bi-arrow-clockwise me-1"></i>Refresh briefing
+    </button>
+  </div>
+
+  <!-- Loading state -->
+  <div id="cos-loading" class="text-center py-5">
+    <div class="spinner-border text-primary" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+    <p class="text-muted mt-3 mb-0">Generating your briefing...</p>
+  </div>
+
+  <!-- Error state -->
+  <div id="cos-error" class="alert alert-danger d-none" role="alert">
+    <i class="bi bi-exclamation-triangle me-2"></i><span id="cos-error-text"></span>
+  </div>
+
+  <!-- Briefing content -->
+  <div id="cos-content" class="d-none">
+    <div class="row g-3">
+      <div class="col-lg-5">
+        <div class="card h-100 shadow-sm">
+          <div class="card-header bg-primary text-white">
+            <i class="bi bi-stars me-1"></i>Today's Summary
+          </div>
+          <div class="card-body">
+            <p id="cos-summary" class="mb-3"></p>
+            <div id="cos-source-counts" class="d-flex gap-2 flex-wrap small text-muted"></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-7">
+        <div class="card h-100 shadow-sm">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-check2-square me-1"></i>Action Items</span>
+            <span class="badge bg-primary" id="cos-action-count">0</span>
+          </div>
+          <div class="card-body p-0">
+            <ul class="list-group list-group-flush" id="cos-action-list"></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/chief_of_staff/dashboard.js') }}"></script>
+{% endblock %}

@@ -101,6 +101,13 @@
           </a>
         </li>
         {% endif %}
+        {% if app_settings.enable_chief_of_staff_dashboard %}
+        <li class="nav-item">
+          <a class="nav-link d-flex align-items-center" href="{{ url_for('frontend_chief_of_staff.chief_of_staff_dashboard') }}" title="Your daily AI Chief of Staff briefing across email, meetings, and Teams.">
+            <i class="bi bi-clipboard2-check me-2"></i><span class="nav-text">Chief of Staff</span>
+          </a>
+        </li>
+        {% endif %}
       {% endif %}
     </ul>
 

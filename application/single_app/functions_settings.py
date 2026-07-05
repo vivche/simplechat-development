@@ -1025,6 +1025,9 @@ def get_settings(use_cosmos=False, include_source=False):
         'custom_pages_menu_name': 'Custom Pages',
         'custom_pages_force_menu': False,
 
+        # AI Chief of Staff (POC)
+        'enable_chief_of_staff_dashboard': False,
+
         # Support Menu
         'enable_support_menu': False,
         'support_menu_name': 'Support',

@@ -1012,6 +1012,8 @@ def register_route_frontend_admin_settings(bp):
             if not support_menu_name:
                 support_menu_name = 'Support'
 
+            enable_chief_of_staff_dashboard = form_data.get('enable_chief_of_staff_dashboard') == 'on'
+
             enable_support_send_feedback = form_data.get('enable_support_send_feedback') == 'on'
             support_feedback_recipient_email = form_data.get('support_feedback_recipient_email', '').strip()
             if enable_support_send_feedback and not support_feedback_recipient_email:
@@ -1926,6 +1928,9 @@ def register_route_frontend_admin_settings(bp):
                 'access_request_button_enabled': bool(settings.get('access_request_button_enabled', False)),
                 'access_request_button_text': settings.get('access_request_button_text', 'Request Access'),
                 'access_request_page_url': settings.get('access_request_page_url', '/custom/request-access'),
+
+                # *** AI Chief of Staff (POC) ***
+                'enable_chief_of_staff_dashboard': enable_chief_of_staff_dashboard,
 
                 # *** Support Menu ***
                 'enable_support_menu': enable_support_menu,

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "meeting-1",
+    "title": "Q3 Delivery Review - Prep",
+    "start": "2025-06-09T14:00:00Z",
+    "end": "2025-06-09T14:45:00Z",
+    "attendees": ["You", "Priya Nair", "Marcus Webb", "Dana Ortiz"],
+    "notes": "Walked through the delivery risks. Migration workstream is the critical path. Priya to send updated timeline. Group agreed to revisit scope on Wednesday. Action: You to draft a go/no-go recommendation for leadership."
+  },
+  {
+    "id": "meeting-2",
+    "title": "Weekly Engineering Standup",
+    "start": "2025-06-09T15:30:00Z",
+    "end": "2025-06-09T15:50:00Z",
+    "attendees": ["You", "Marcus Webb", "Sam Lee", "Dana Ortiz"],
+    "notes": "Two blockers raised: test environment is unstable and the CI pipeline is timing out on the integration suite. Marcus taking the CI issue. Sam will investigate the test environment once onboarded. You agreed to escalate infra capacity to the platform team."
+  }
+]

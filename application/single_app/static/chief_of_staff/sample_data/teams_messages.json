@@ -1,0 +1,23 @@
+[
+  {
+    "id": "teams-1",
+    "channel": "Delivery Team",
+    "from": "Marcus Webb",
+    "sent": "2025-06-09T10:05:00Z",
+    "message": "Heads up - the staging environment is down again. I've raised a ticket with platform but we may lose testing time today. Can someone confirm the ticket number so I can chase it?"
+  },
+  {
+    "id": "teams-2",
+    "channel": "Delivery Team",
+    "from": "Dana Ortiz",
+    "sent": "2025-06-09T10:32:00Z",
+    "message": "Reminder: timesheets are due end of day Friday. Also, can whoever is running the customer demo next week share the slides for review by Thursday?"
+  },
+  {
+    "id": "teams-3",
+    "channel": "Leadership",
+    "from": "Priya Nair",
+    "sent": "2025-06-09T12:15:00Z",
+    "message": "I need the go/no-go recommendation for the release in writing before the Wednesday sync. Please include the risk summary and your recommended option."
+  }
+]
