@@ -85,9 +85,10 @@ Each source is fetched in its own `try/except`, so one failure (for example, a m
 
 ### Windows / limits
 
-Tunable constants at the top of `functions_chief_of_staff.py`:
+Tunable via **environment variables** (read at import in `functions_chief_of_staff.py`, each
+falling back to the default below if unset, non-numeric, or non-positive):
 
-| Constant | Default | Meaning |
+| Environment variable | Default | Meaning |
 |---|---|---|
 | `GRAPH_LOOKBACK_HOURS` | 48 | How far back to scan mail/Teams. |
 | `GRAPH_LOOKAHEAD_HOURS` | 48 | How far forward to scan the calendar. |

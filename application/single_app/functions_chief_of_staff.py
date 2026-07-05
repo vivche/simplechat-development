@@ -62,13 +62,36 @@ def load_sample_briefing_data():
 
 
 # How far back to look for recent mail/Teams activity, and how far forward to scan the
-# calendar for meetings that still need preparation.
-GRAPH_LOOKBACK_HOURS = 48
-GRAPH_LOOKAHEAD_HOURS = 48
-GRAPH_MAX_EMAILS = 15
-GRAPH_MAX_MEETINGS = 10
-GRAPH_MAX_CHATS = 5
-GRAPH_MAX_MESSAGES_PER_CHAT = 5
+# calendar for meetings that still need preparation. All overridable via environment
+# variables so a deployment can tune the briefing window and volume without a code change.
+def _env_int(name, default):
+    """Read a positive integer from the environment, falling back to default on any issue."""
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == '':
+        return default
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        _log(
+            f"Chief of Staff: invalid int for {name}={raw!r}, using default {default}.",
+            level=logging.WARNING,
+        )
+        return default
+    if value <= 0:
+        _log(
+            f"Chief of Staff: non-positive value for {name}={value}, using default {default}.",
+            level=logging.WARNING,
+        )
+        return default
+    return value
+
+
+GRAPH_LOOKBACK_HOURS = _env_int('GRAPH_LOOKBACK_HOURS', 48)
+GRAPH_LOOKAHEAD_HOURS = _env_int('GRAPH_LOOKAHEAD_HOURS', 48)
+GRAPH_MAX_EMAILS = _env_int('GRAPH_MAX_EMAILS', 15)
+GRAPH_MAX_MEETINGS = _env_int('GRAPH_MAX_MEETINGS', 10)
+GRAPH_MAX_CHATS = _env_int('GRAPH_MAX_CHATS', 5)
+GRAPH_MAX_MESSAGES_PER_CHAT = _env_int('GRAPH_MAX_MESSAGES_PER_CHAT', 5)
 
 
 def _strip_html(value):
