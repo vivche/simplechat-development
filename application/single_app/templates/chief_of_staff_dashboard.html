@@ -45,12 +45,72 @@
       </div>
       <div class="col-lg-7">
         <div class="card h-100 shadow-sm">
-          <div class="card-header d-flex align-items-center justify-content-between">
-            <span><i class="bi bi-check2-square me-1"></i>Action Items</span>
-            <span class="badge bg-primary" id="cos-action-count">0</span>
+          <div class="card-header d-flex align-items-center justify-content-between bg-dark text-white">
+            <span><i class="bi bi-sort-numeric-down me-1"></i>Top Priorities</span>
+            <span class="badge bg-light text-dark" id="cos-priority-count">0</span>
           </div>
           <div class="card-body p-0">
+            <ol class="list-group list-group-numbered list-group-flush" id="cos-priority-list"></ol>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Detail sections grouped into tabs to keep the page compact -->
+    <div class="card shadow-sm mt-3">
+      <div class="card-header p-0">
+        <ul class="nav nav-tabs card-header-tabs mx-2 mt-2" id="cos-detail-tabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="cos-tab-actions" data-bs-toggle="tab"
+              data-bs-target="#cos-pane-actions" type="button" role="tab"
+              aria-controls="cos-pane-actions" aria-selected="true">
+              <i class="bi bi-check2-square me-1"></i>Action Items
+              <span class="badge bg-primary ms-1" id="cos-action-count">0</span>
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="cos-tab-commitments" data-bs-toggle="tab"
+              data-bs-target="#cos-pane-commitments" type="button" role="tab"
+              aria-controls="cos-pane-commitments" aria-selected="false">
+              <i class="bi bi-hand-thumbs-up me-1"></i>Your Commitments
+              <span class="badge bg-success ms-1" id="cos-commitment-count">0</span>
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="cos-tab-meetings" data-bs-toggle="tab"
+              data-bs-target="#cos-pane-meetings" type="button" role="tab"
+              aria-controls="cos-pane-meetings" aria-selected="false">
+              <i class="bi bi-calendar2-week me-1"></i>Meeting Briefings
+              <span class="badge bg-info text-dark ms-1" id="cos-meeting-count">0</span>
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="cos-tab-followups" data-bs-toggle="tab"
+              data-bs-target="#cos-pane-followups" type="button" role="tab"
+              aria-controls="cos-pane-followups" aria-selected="false">
+              <i class="bi bi-arrow-repeat me-1"></i>Follow-ups &amp; Open Items
+              <span class="badge bg-warning text-dark ms-1" id="cos-followup-count">0</span>
+            </button>
+          </li>
+        </ul>
+      </div>
+      <div class="card-body p-0">
+        <div class="tab-content" id="cos-detail-tab-content">
+          <div class="tab-pane fade show active" id="cos-pane-actions" role="tabpanel"
+            aria-labelledby="cos-tab-actions" tabindex="0">
             <ul class="list-group list-group-flush" id="cos-action-list"></ul>
+          </div>
+          <div class="tab-pane fade" id="cos-pane-commitments" role="tabpanel"
+            aria-labelledby="cos-tab-commitments" tabindex="0">
+            <ul class="list-group list-group-flush" id="cos-commitment-list"></ul>
+          </div>
+          <div class="tab-pane fade" id="cos-pane-meetings" role="tabpanel"
+            aria-labelledby="cos-tab-meetings" tabindex="0">
+            <div class="list-group list-group-flush" id="cos-meeting-list"></div>
+          </div>
+          <div class="tab-pane fade" id="cos-pane-followups" role="tabpanel"
+            aria-labelledby="cos-tab-followups" tabindex="0">
+            <ul class="list-group list-group-flush" id="cos-followup-list"></ul>
           </div>
         </div>
       </div>

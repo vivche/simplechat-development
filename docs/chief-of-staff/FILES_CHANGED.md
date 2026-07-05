@@ -14,15 +14,15 @@ All changes are additive and gated behind the `enable_chief_of_staff_dashboard` 
 ### Backend logic
 | File | Purpose |
 |---|---|
-| `application/single_app/functions_chief_of_staff.py` | Core module: loads bundled sample data, builds the LLM prompt, calls the configured Azure OpenAI model, and parses the JSON briefing. Exposes `generate_briefing()`. |
+| `application/single_app/functions_chief_of_staff.py` | Core module: loads bundled sample data, builds the LLM prompt, calls the configured Azure OpenAI model, and parses the JSON briefing. Exposes `generate_briefing()`. The prompt/parser produce six sections: summary, priorities, action items, commitments, meeting briefings, follow-ups. |
 | `application/single_app/route_backend_chief_of_staff.py` | Backend API route returning the generated briefing JSON. Gated by `@enabled_required('enable_chief_of_staff_dashboard')`. |
 | `application/single_app/route_frontend_chief_of_staff.py` | Frontend route that renders the dashboard page. Gated by the same feature flag. |
 
 ### Frontend
 | File | Purpose |
 |---|---|
-| `application/single_app/templates/chief_of_staff_dashboard.html` | Dashboard page — Today's Summary + Action Items + "Refresh briefing" button. |
-| `application/single_app/static/js/chief_of_staff/dashboard.js` | Fetches the briefing from the backend endpoint and renders the summary and action-item cards. |
+| `application/single_app/templates/chief_of_staff_dashboard.html` | Dashboard page — Today's Summary and Top Priorities at the top; Action Items, Your Commitments, Meeting Briefings, and Follow-ups grouped into Bootstrap tabs (with live count badges); plus a "Refresh briefing" button. |
+| `application/single_app/static/js/chief_of_staff/dashboard.js` | Fetches the briefing from the backend endpoint and renders all six sections (summary, priorities, action items, commitments, meeting briefings, follow-ups) using XSS-safe DOM construction. |
 
 ### Sample data (the POC's mock mailbox / calendar / Teams)
 | File | Purpose |
@@ -34,7 +34,7 @@ All changes are additive and gated behind the `enable_chief_of_staff_dashboard` 
 ### Tests & documentation
 | File | Purpose |
 |---|---|
-| `functional_tests/test_chief_of_staff_briefing.py` | Validates sample-data loading, prompt inclusion of all sources, and JSON parsing. |
+| `functional_tests/test_chief_of_staff_briefing.py` | Validates sample-data loading, prompt inclusion of all sources, and JSON parsing across all six briefing sections. |
 | `docs/chief-of-staff/README.md` | POC plan, GCC-H constraints, architecture, and design decisions. |
 | `docs/chief-of-staff/FILES_CHANGED.md` | This file — as-built inventory of changed/added files. |
 

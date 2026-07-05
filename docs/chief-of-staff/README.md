@@ -16,6 +16,29 @@ An "AI Chief of Staff for Delivery Teams" that helps a user stay on top of their
 Target experience (inspired by Microsoft Scout): open the app and immediately see a
 "What's on deck?" dashboard with live briefing tiles + action cards — no typing required.
 
+### Phase 1 capabilities (implemented on sample data)
+
+The single briefing call now covers all of the following, rendered as cards on the dashboard:
+
+| Capability | Where it shows |
+|---|---|
+| Reviews emails | Source input + summary |
+| Reviews Teams messages | Source input + summary |
+| Reviews calendar / meetings | Source input + summary |
+| Prioritizes work | **Top Priorities** (ranked) |
+| Tracks action items | **Action Items** (owner, due, source, priority) |
+| Notices commitments you made | **Your Commitments** (what you promised, to whom, due) |
+| Prepares meeting briefings | **Meeting Briefings** (objective, prep bullets, attendees) |
+| Follows up on open items | **Follow-ups & Open Items** (waiting-on, age, suggested nudge) |
+
+All six sections come from one LLM call that returns a structured JSON briefing; the parser
+returns every section as a safe default (empty list) when the model output is missing or
+malformed.
+
+**Layout:** Today's Summary and Top Priorities stay visible at the top for an at-a-glance
+view; Action Items, Your Commitments, Meeting Briefings, and Follow-ups are grouped into
+Bootstrap tabs (each with a live count badge) to keep the page compact.
+
 ---
 
 ## 2. GCC High (GCC-H) Reality — READ FIRST

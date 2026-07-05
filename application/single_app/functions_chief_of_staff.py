@@ -61,18 +61,47 @@ def _build_briefing_prompt(data):
 
 BRIEFING_SYSTEM_PROMPT = (
     "You are an AI Chief of Staff for a delivery team lead. "
-    "You are given the day's emails, meeting notes, and Teams messages. "
-    "Produce a concise executive briefing and extract concrete action items. "
-    "Return ONLY valid JSON (no markdown, no code fences) with this exact shape:\n"
+    "You are given the day's emails, meeting notes/calendar, and Teams messages. "
+    "Review all three sources and produce a single briefing that helps the user stay on "
+    "top of their work. Return ONLY valid JSON (no markdown, no code fences) with this "
+    "exact shape:\n"
     "{\n"
     '  "summary": "a short 2-4 sentence overview of what needs attention today",\n'
+    '  "priorities": [\n'
+    '    {"rank": 1, "title": "the single most important thing to do", '
+    '"why": "one short sentence on why it matters most now"}\n'
+    "  ],\n"
     '  "action_items": [\n'
     '    {"title": "short imperative task", "owner": "who is responsible or \'You\'", '
     '"due": "a due date or timeframe if mentioned, else empty string", '
     '"source": "email|meeting|teams", "priority": "high|medium|low"}\n'
+    "  ],\n"
+    '  "commitments": [\n'
+    '    {"commitment": "something YOU promised or agreed to do", '
+    '"to_whom": "the person or group you owe it to", '
+    '"due": "a due date or timeframe if mentioned, else empty string", '
+    '"source": "email|meeting|teams"}\n'
+    "  ],\n"
+    '  "meeting_briefings": [\n'
+    '    {"meeting": "meeting title", "when": "start time or timeframe", '
+    '"objective": "the goal / why this meeting matters", '
+    '"prep": ["a short prep bullet the user should do or bring"], '
+    '"attendees": "comma-separated key attendees"}\n'
+    "  ],\n"
+    '  "follow_ups": [\n'
+    '    {"item": "an open item awaiting a response or still unresolved", '
+    '"waiting_on": "who owes the response, or \'You\'", '
+    '"age": "how long it has been open or since when, if known, else empty string", '
+    '"suggested_nudge": "a short suggested next step to move it forward"}\n'
     "  ]\n"
     "}\n"
-    "Be factual and only include action items that are genuinely implied by the input."
+    "Guidance: 'priorities' should rank the 2-4 highest-impact items across everything, "
+    "ordered by rank (1 = do first). 'commitments' are things the USER personally said they "
+    "would do (look for phrases like 'You agreed', 'You to', 'I'll', 'I will'). "
+    "'meeting_briefings' should cover upcoming or same-day meetings that need preparation. "
+    "'follow_ups' are open loops: questions asked but unanswered, approvals pending, or items "
+    "waiting on someone. Be factual and only include items genuinely implied by the input. "
+    "If a section has nothing, return an empty array for it."
 )
 
 
@@ -136,9 +165,20 @@ def _parse_briefing_json(content):
             "Chief of Staff: model returned non-JSON briefing; returning raw text.",
             level=logging.WARNING,
         )
-        return {'summary': content, 'action_items': []}
+        return {
+            'summary': content,
+            'priorities': [],
+            'action_items': [],
+            'commitments': [],
+            'meeting_briefings': [],
+            'follow_ups': [],
+        }
 
     return {
         'summary': parsed.get('summary', ''),
+        'priorities': parsed.get('priorities', []) or [],
         'action_items': parsed.get('action_items', []) or [],
+        'commitments': parsed.get('commitments', []) or [],
+        'meeting_briefings': parsed.get('meeting_briefings', []) or [],
+        'follow_ups': parsed.get('follow_ups', []) or [],
     }

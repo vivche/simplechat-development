@@ -14,5 +14,13 @@
     "end": "2025-06-09T15:50:00Z",
     "attendees": ["You", "Marcus Webb", "Sam Lee", "Dana Ortiz"],
     "notes": "Two blockers raised: test environment is unstable and the CI pipeline is timing out on the integration suite. Marcus taking the CI issue. Sam will investigate the test environment once onboarded. You agreed to escalate infra capacity to the platform team."
+  },
+  {
+    "id": "meeting-3",
+    "title": "Go/No-Go Sync with Leadership",
+    "start": "2025-06-11T13:00:00Z",
+    "end": "2025-06-11T13:30:00Z",
+    "attendees": ["You", "Priya Nair", "Marcus Webb"],
+    "notes": "Upcoming Wednesday sync. Leadership expects your written go/no-go recommendation for release 2.4, including the risk summary and recommended option. No decision has been made yet; this is where scope-vs-slip is settled."
   }
 ]

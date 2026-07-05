@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 Functional test for the AI Chief of Staff POC dashboard.
-Version: 0.250.015
+Version: 0.250.016
 Implemented in: 0.250.015
 
 This test ensures that:
   - The bundled sample fixtures (emails, meetings, Teams messages) load correctly.
   - The briefing prompt builder includes all three sources.
   - The model-response JSON parser tolerates fenced code blocks and malformed output.
+  - The parser exposes all briefing sections (priorities, action items,
+    commitments, meeting briefings, follow-ups).
 """
 
 import sys
@@ -70,19 +72,37 @@ def test_parse_briefing_json():
     try:
         from functions_chief_of_staff import _parse_briefing_json
 
-        clean = json.dumps({'summary': 'Hi', 'action_items': [{'title': 'Do X'}]})
+        section_keys = (
+            'priorities', 'action_items', 'commitments',
+            'meeting_briefings', 'follow_ups',
+        )
+
+        clean = json.dumps({
+            'summary': 'Hi',
+            'priorities': [{'rank': 1, 'title': 'Top thing', 'why': 'Urgent'}],
+            'action_items': [{'title': 'Do X'}],
+            'commitments': [{'commitment': 'Send report', 'to_whom': 'Priya'}],
+            'meeting_briefings': [{'meeting': 'Go/No-Go', 'prep': ['bring risks']}],
+            'follow_ups': [{'item': 'Ticket number', 'waiting_on': 'Marcus'}],
+        })
         result = _parse_briefing_json(clean)
         assert result['summary'] == 'Hi'
         assert len(result['action_items']) == 1
+        assert len(result['priorities']) == 1
+        assert len(result['commitments']) == 1
+        assert len(result['meeting_briefings']) == 1
+        assert len(result['follow_ups']) == 1
 
         fenced = "```json\n" + clean + "\n```"
         result = _parse_briefing_json(fenced)
         assert result['summary'] == 'Hi'
 
+        # Malformed output should still return every section key as a safe default.
         bad = "not json at all"
         result = _parse_briefing_json(bad)
         assert result['summary'] == bad
-        assert result['action_items'] == []
+        for key in section_keys:
+            assert result[key] == [], f"Expected empty list for '{key}' on bad input"
 
         print("JSON parser passed!")
         return True
