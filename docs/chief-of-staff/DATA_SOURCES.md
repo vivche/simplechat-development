@@ -130,3 +130,47 @@ and `AZURE_ENVIRONMENT`), so GCC High automatically targets `https://graph.micro
 than the commercial `https://graph.microsoft.com`. This was a general plugin bug (not specific
 to Chief of Staff) — see [MSGRAPH_SOVEREIGN_ENDPOINT_FIX.md](../explanation/fixes/MSGRAPH_SOVEREIGN_ENDPOINT_FIX.md).
 
+---
+
+## 6. Granted delegated permissions (current)
+
+The Chief of Staff briefing is **read-only**, so the app registration
+(`simplechat6-dev-ar`, appId `a8136de0-aae7-4695-9e50-bdcdda22ef82`) only needs these
+delegated Microsoft Graph scopes:
+
+| Scope | Purpose |
+|---|---|
+| `User.Read` | Baseline sign-in / profile. |
+| `Mail.Read` | Read the signed-in user's mail for the briefing. |
+| `Calendars.Read` | Read the user's calendar events. |
+| `Chat.Read` | Read the user's Teams chats and chat messages. |
+
+> Note: on sovereign clouds (GCC High), `az ad app permission admin-consent` is not supported.
+> Add the scopes with `az ad app permission add`, then grant consent either with
+> `az ad app permission grant` (requires a privileged admin role) or via the Entra portal's
+> **Grant admin consent** button on the app's API permissions blade.
+
+---
+
+## 7. Future enhancements — additional permissions required
+
+**TODO:** If the Chief of Staff feature grows beyond read-only briefings into *actions*
+(for example, creating meeting invites, sending follow-up emails, or replying in Teams), the
+app registration will need **additional delegated Graph permissions** and fresh admin consent.
+The current read-only scopes above are **not** sufficient for write operations.
+
+Anticipated scopes by capability (grant only what the added feature actually uses):
+
+| Planned capability | Additional delegated scope(s) | Underlying `MSGraphPlugin` call |
+|---|---|---|
+| Create / update calendar invites | `Calendars.ReadWrite` | `create_calendar_invite`, `create_calendar_invite_delayed_delivery` |
+| Send email / follow-ups | `Mail.Send` | `send_mail` |
+| Mark mail read/unread, draft replies | `Mail.ReadWrite` | mail update/draft operations |
+| Read Teams *channel* messages (not just chats) | `Team.ReadBasic.All`, `ChannelMessage.Read.All` | channel message reads |
+
+When adding any of these:
+
+1. `az ad app permission add --id <appId> --api 00000003-0000-0000-c000-000000000000 --api-permissions <scopeGuid>=Scope`
+2. Re-grant admin consent (portal button, or `az ad app permission grant` with an admin role).
+3. Users may see a one-time interactive consent prompt on first use of the new capability.
+
