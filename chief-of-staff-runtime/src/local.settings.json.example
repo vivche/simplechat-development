@@ -1,0 +1,26 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "COS_CLOUD": "usgovernment",
+    "COS_TENANT_ID": "03f141f3-496d-4319-bbea-a3e9286cab10",
+    "COS_CLIENT_ID": "bed646c0-7953-4871-8b74-456a5883c283",
+    "COS_CLIENT_SECRET": "<set-from-key-vault-do-not-commit>",
+    "COS_API_SCOPE": "api://bed646c0-7953-4871-8b74-456a5883c283/access_as_user",
+
+    "COS_GRAPH_BASE_URL": "https://graph.microsoft.us/v1.0",
+    "COS_AUTHORITY_HOST": "https://login.microsoftonline.us",
+
+    "COS_COSMOS_ENDPOINT": "",
+    "COS_COSMOS_KEY": "",
+    "COS_COSMOS_DATABASE": "chief_of_staff",
+    "COS_USE_IN_MEMORY_STORES": "true",
+
+    "COS_CAPABILITY_CATALOG_PATH": "config/capability_catalog.v1.json",
+
+    "COS_GRAPH_LOOKBACK_HOURS": "48",
+    "COS_GRAPH_LOOKAHEAD_HOURS": "48"
+  }
+}

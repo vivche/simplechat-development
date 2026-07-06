@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Workflow: COS Build and Push Docker Image
+#
+# Reused from vivche/security-plugin (docker-build.yml), adapted for the
+# chief-of-staff-runtime component inside the microsoft/simplechat repo:
+#   • path triggers scoped to chief-of-staff-runtime/src/** (monorepo-safe)
+#   • build context / Dockerfile under chief-of-staff-runtime/src
+#   • secrets prefixed COS_
+#
+# Builds the image and pushes two tags to ACR:
+#   • <sha>  – immutable, used by the deploy workflow for traceability
+#   • latest – mutable pointer for ad-hoc pulls
+#
+# Secrets required (set after the first infra deploy):
+#   COS_ACR_USERNAME     – ACR admin username (same as registry name)
+#   COS_ACR_PASSWORD     – ACR admin password
+#   COS_ACR_LOGIN_SERVER – ACR login server (e.g. acrcosruntimexxxxxx.azurecr.us)
+# ─────────────────────────────────────────────────────────────────────────────
+name: COS Build and Push Docker Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'chief-of-staff-runtime/src/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: cos-runtime
+
+jobs:
+  build:
+    name: Docker build → ACR push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Log in to ACR ────────────────────────────────────────────────────────
+      - name: Login to Azure Container Registry
+        uses: Azure/docker-login@v2
+        with:
+          username:     ${{ secrets.COS_ACR_USERNAME }}
+          password:     ${{ secrets.COS_ACR_PASSWORD }}
+          login-server: ${{ secrets.COS_ACR_LOGIN_SERVER }}
+
+      # ── Build and push ───────────────────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./chief-of-staff-runtime/src
+          file:    ./chief-of-staff-runtime/src/Dockerfile
+          push:    true
+          tags: |
+            ${{ secrets.COS_ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ secrets.COS_ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max

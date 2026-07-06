@@ -1,0 +1,9 @@
+# requirements.txt — Chief of Staff Runtime (Azure Functions, Python)
+# Self-contained: this file owns the runtime's dependencies. Do NOT rely on SimpleChat's requirements.
+
+azure-functions>=1.21.0
+azure-cosmos>=4.7.0
+msal>=1.31.0
+requests>=2.32.0
+PyJWT>=2.9.0
+cryptography>=43.0.0

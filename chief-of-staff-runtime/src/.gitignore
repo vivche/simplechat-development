@@ -1,0 +1,8 @@
+# .gitignore — Chief of Staff Runtime
+# Never commit real local settings or secrets.
+local.settings.json
+.env
+__pycache__/
+*.pyc
+.venv/
+.python_packages/
