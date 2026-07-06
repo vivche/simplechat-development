@@ -15,11 +15,11 @@
 #
 # Secrets required:
 #   COS_AZURE_CREDENTIALS – SP JSON (az ad sp create-for-rbac --sdk-auth)
-#   COS_ACR_LOGIN_SERVER  – ACR login server (e.g. acrcosruntimexxxxxx.azurecr.us)
 #
 # Variables required (set automatically by COS Deploy Infrastructure, or manually):
 #   COS_FUNCTION_APP_NAME – e.g. func-cos-runtime-dev
 #   COS_RESOURCE_GROUP    – e.g. cos-runtime-dev-rg
+#   COS_ACR_LOGIN_SERVER  – ACR login server (e.g. acrcosruntimexxxxxx.azurecr.us)
 # ─────────────────────────────────────────────────────────────────────────────
 name: COS Deploy Function App
 
@@ -73,7 +73,7 @@ jobs:
           az functionapp config container set \
             --name           "${{ vars.COS_FUNCTION_APP_NAME }}" \
             --resource-group "${{ vars.COS_RESOURCE_GROUP }}" \
-            --image          "${{ secrets.COS_ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}"
+            --image          "${{ vars.COS_ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}"
 
       # ── Restart to pick up the new image immediately ─────────────────────────
       - name: Restart Function App

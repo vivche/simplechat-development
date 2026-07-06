@@ -69,8 +69,9 @@ Because ACR/KV names carry a random suffix, capture them once from the infra out
 `COS_*` repo variables) and set:
 
 - **Repo secrets** for the build/deploy workflows:
-  - `COS_ACR_LOGIN_SERVER` (e.g. `acrcosruntimexxxxxx.azurecr.us`)
   - `COS_ACR_USERNAME` / `COS_ACR_PASSWORD` (`az acr credential show -n <acr>`)
+  - (`COS_ACR_LOGIN_SERVER` is set automatically as a repo **variable** by the infra workflow — no
+    manual secret needed.)
 - **Copy the client secret into the dedicated COS Key Vault** (Bicep never stores the value). Run in
   a trusted shell — do **not** print the value into logs or chat:
   ```powershell

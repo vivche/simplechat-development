@@ -14,6 +14,8 @@
 # Secrets required (set after the first infra deploy):
 #   COS_ACR_USERNAME     – ACR admin username (same as registry name)
 #   COS_ACR_PASSWORD     – ACR admin password
+#
+# Variables (set automatically by the COS infra-deploy workflow):
 #   COS_ACR_LOGIN_SERVER – ACR login server (e.g. acrcosruntimexxxxxx.azurecr.us)
 # ─────────────────────────────────────────────────────────────────────────────
 name: COS Build and Push Docker Image
@@ -46,7 +48,7 @@ jobs:
         with:
           username:     ${{ secrets.COS_ACR_USERNAME }}
           password:     ${{ secrets.COS_ACR_PASSWORD }}
-          login-server: ${{ secrets.COS_ACR_LOGIN_SERVER }}
+          login-server: ${{ vars.COS_ACR_LOGIN_SERVER }}
 
       # ── Build and push ───────────────────────────────────────────────────────
       - name: Set up Docker Buildx
@@ -59,7 +61,7 @@ jobs:
           file:    ./chief-of-staff-runtime/src/Dockerfile
           push:    true
           tags: |
-            ${{ secrets.COS_ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-            ${{ secrets.COS_ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+            ${{ vars.COS_ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ vars.COS_ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to:   type=gha,mode=max
