@@ -95,7 +95,7 @@ load_dotenv()
 EXECUTOR_TYPE = 'thread'
 EXECUTOR_MAX_WORKERS = 30
 SESSION_TYPE = 'filesystem'
-VERSION = "0.250.022"
+VERSION = "0.250.025"
 
 SESSION_COOKIE_SAMESITE = os.getenv('SESSION_COOKIE_SAMESITE', 'Lax')
 SESSION_COOKIE_HTTPONLY = os.getenv('SESSION_COOKIE_HTTPONLY', 'true').lower() != 'false'
@@ -274,6 +274,17 @@ CLIENT_SECRET = os.getenv("MICROSOFT_PROVIDER_AUTHENTICATION_SECRET")
 TENANT_ID = os.getenv("TENANT_ID")
 SCOPE = ["User.Read", "User.ReadBasic.All", "People.Read.All", "Group.Read.All"] # Adjust scope according to your needs
 MICROSOFT_PROVIDER_AUTHENTICATION_SECRET = os.getenv("MICROSOFT_PROVIDER_AUTHENTICATION_SECRET")
+
+# Chief of Staff Runtime (external agent runtime) integration.
+# The runtime is a separate network service (Azure Function). SimpleChat acts as a client:
+# it mints a runtime-audience token via delegated OBO and proxies Agent Builder calls to it.
+# See application docs: chief_of_staff_runtime_integration.md
+#   COS_RUNTIME_BASE_URL - base URL of the runtime API, e.g. https://func-cos-runtime-dev.azurewebsites.us/api
+#   COS_RUNTIME_SCOPE    - exposed scope of the runtime app, e.g. api://<runtime-client-id>/access_as_user
+COS_RUNTIME_BASE_URL = os.getenv("COS_RUNTIME_BASE_URL", "").rstrip("/")
+COS_RUNTIME_SCOPE = os.getenv("COS_RUNTIME_SCOPE", "")
+COS_RUNTIME_TIMEOUT_SECONDS = int(os.getenv("COS_RUNTIME_TIMEOUT_SECONDS", "30"))
+ENABLE_COS_RUNTIME_AGENTS = os.getenv("ENABLE_COS_RUNTIME_AGENTS", "false").lower() == "true"
 ENABLE_CI_BEARER_SESSION_AUTH = os.getenv("ENABLE_CI_BEARER_SESSION_AUTH", "false").lower() == "true"
 CI_BEARER_SESSION_ALLOWED_APP_IDS = [
     app_id.strip().lower()

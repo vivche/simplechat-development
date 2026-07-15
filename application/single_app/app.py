@@ -93,6 +93,8 @@ from route_backend_collaboration import register_route_backend_collaboration
 from route_backend_data_management import register_route_backend_data_management
 from route_backend_msgraph_pending_actions import register_route_backend_msgraph_pending_actions
 from route_backend_chief_of_staff import register_route_backend_chief_of_staff
+from route_frontend_cos_agents import register_route_frontend_cos_agents
+from route_backend_cos_agents import register_route_backend_cos_agents
 from route_enhanced_citations import register_enhanced_citations_routes
 from plugin_validation_endpoint import plugin_validation_admin_bp, plugin_validation_bp
 from route_openapi import register_openapi_routes
@@ -1121,6 +1123,10 @@ register_route_blueprint('frontend_support', register_route_frontend_support, us
 # ------------------- AI Chief of Staff Routes (POC) ----
 register_route_blueprint('frontend_chief_of_staff', register_route_frontend_chief_of_staff, user_required_blueprint)
 register_route_blueprint('backend_chief_of_staff', register_route_backend_chief_of_staff, user_required_blueprint)
+
+# ------------------- Chief of Staff Runtime Agents (POC) -
+register_route_blueprint('frontend_cos_agents', register_route_frontend_cos_agents, user_required_blueprint)
+register_route_blueprint('backend_cos_agents', register_route_backend_cos_agents, user_required_blueprint)
 
 # ------------------- Notifications Routes --------------
 register_route_blueprint('frontend_notifications', register_route_frontend_notifications, user_required_blueprint)

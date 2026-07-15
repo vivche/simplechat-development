@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+
+{% block title %}
+  Agent Builder - {{ app_settings.app_title }}
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4" id="cos-agents-app">
+  <div class="d-flex align-items-center justify-content-between flex-wrap mb-3">
+    <div>
+      <h1 class="h3 mb-1"><i class="bi bi-robot me-2"></i>Agent Builder</h1>
+      <p class="text-muted mb-0">
+        Compose personal agents from vetted capabilities and run them.
+        <span class="badge bg-secondary">POC</span>
+      </p>
+    </div>
+    <button type="button" class="btn btn-primary" id="cos-new-agent-btn">
+      <i class="bi bi-plus-lg me-1"></i>New agent
+    </button>
+  </div>
+
+  <!-- Global error / status -->
+  <div id="cos-status" class="alert d-none" role="alert"></div>
+
+  <!-- Mode tabs: keep agent management and testing on separate views -->
+  <ul class="nav nav-tabs mb-3" id="cos-tabs" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="cos-build-tab" data-bs-toggle="tab"
+        data-bs-target="#cos-build-pane" type="button" role="tab">
+        <i class="bi bi-pencil-square me-1"></i>Build agents
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="cos-test-tab" data-bs-toggle="tab"
+        data-bs-target="#cos-test-pane" type="button" role="tab">
+        <i class="bi bi-chat-dots me-1"></i>Test / Chat
+      </button>
+    </li>
+  </ul>
+
+  <div class="tab-content">
+    <!-- ============================ BUILD PANE ============================ -->
+    <div class="tab-pane fade show active" id="cos-build-pane" role="tabpanel">
+      <div class="row g-3">
+        <!-- Agent list -->
+        <div class="col-lg-5">
+          <div class="card shadow-sm h-100">
+            <div class="card-header d-flex align-items-center justify-content-between">
+              <span><i class="bi bi-collection me-1"></i>My agents</span>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="cos-refresh-btn">
+                <i class="bi bi-arrow-clockwise"></i>
+              </button>
+            </div>
+            <div class="card-body p-0">
+              <div id="cos-agents-loading" class="text-center py-4">
+                <div class="spinner-border text-primary" role="status">
+                  <span class="visually-hidden">Loading...</span>
+                </div>
+              </div>
+              <div id="cos-agents-empty" class="text-muted text-center py-4 d-none">
+                No agents yet. Create one to get started.
+              </div>
+              <ul class="list-group list-group-flush d-none" id="cos-agents-list"></ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Editor -->
+        <div class="col-lg-7">
+          <div class="card shadow-sm h-100">
+            <div class="card-header">
+              <i class="bi bi-pencil-square me-1"></i><span id="cos-editor-title">New agent</span>
+            </div>
+            <div class="card-body">
+              <form id="cos-agent-form">
+                <input type="hidden" id="cos-agent-id" />
+
+                <div class="mb-3">
+                  <label class="form-label" for="cos-agent-name">Name</label>
+                  <input type="text" class="form-control" id="cos-agent-name" maxlength="200" required />
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="cos-agent-description">Description</label>
+                  <input type="text" class="form-control" id="cos-agent-description" maxlength="500" />
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="cos-agent-instructions">Instructions</label>
+                  <textarea class="form-control" id="cos-agent-instructions" rows="3"
+                    placeholder="Describe what this agent should do."></textarea>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label d-block">Capabilities</label>
+                  <div id="cos-capabilities" class="d-flex flex-column gap-2">
+                    <div class="text-muted small">Loading capabilities...</div>
+                  </div>
+                </div>
+
+                <div class="row g-3">
+                  <div class="col-sm-6">
+                    <label class="form-label" for="cos-agent-model">Model</label>
+                    <input type="text" class="form-control" id="cos-agent-model" value="gpt-4o" />
+                  </div>
+                  <div class="col-sm-6">
+                    <label class="form-label" for="cos-agent-memory">Memory scope</label>
+                    <select class="form-select" id="cos-agent-memory">
+                      <option value="agent">Agent</option>
+                      <option value="user">User</option>
+                      <option value="none">None</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="form-text mt-2">
+                  <i class="bi bi-shield-lock me-1"></i>Data scope is <strong>self-only</strong> — agents can
+                  only ever touch your own data.
+                </div>
+
+                <div class="d-flex gap-2 mt-3">
+                  <button type="submit" class="btn btn-primary" id="cos-save-btn">
+                    <i class="bi bi-save me-1"></i>Save agent
+                  </button>
+                  <button type="button" class="btn btn-outline-secondary d-none" id="cos-cancel-btn">
+                    Cancel
+                  </button>
+                  <button type="button" class="btn btn-outline-danger ms-auto d-none" id="cos-delete-btn">
+                    <i class="bi bi-trash me-1"></i>Delete
+                  </button>
+                </div>
+              </form>
+
+              <hr class="my-4" />
+
+              <!-- Invoke (raw read-only run, for debugging) -->
+              <div id="cos-invoke-section" class="d-none">
+                <h2 class="h6"><i class="bi bi-play-circle me-1"></i>Run this agent (raw context)</h2>
+                <div class="input-group mb-2">
+                  <input type="text" class="form-control" id="cos-task-input"
+                    placeholder="What is on my plate today?" />
+                  <button class="btn btn-success" type="button" id="cos-invoke-btn">
+                    <i class="bi bi-send me-1"></i>Run
+                  </button>
+                </div>
+                <div id="cos-invoke-result" class="d-none">
+                  <div class="small text-muted mb-1">Scopes used: <span id="cos-scopes-used"></span></div>
+                  <pre class="bg-body-secondary p-3 rounded small" id="cos-invoke-output"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================ TEST PANE ============================ -->
+    <div class="tab-pane fade" id="cos-test-pane" role="tabpanel">
+      <div class="card shadow-sm">
+        <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <label class="mb-0 fw-semibold" for="cos-chat-agent-select">
+              <i class="bi bi-robot me-1"></i>Agent:
+            </label>
+            <select class="form-select form-select-sm" id="cos-chat-agent-select" style="min-width: 220px;">
+              <option value="">Select an agent…</option>
+            </select>
+            <label class="mb-0 small text-muted" for="cos-chat-reviewer-select">
+              <i class="bi bi-people me-1"></i>Reviewer:
+            </label>
+            <select class="form-select form-select-sm" id="cos-chat-reviewer-select" style="min-width: 180px;"
+              title="Optional second agent that reviews/revises proposed actions before approval.">
+              <option value="">None</option>
+            </select>
+          </div>
+          <div class="d-flex align-items-center gap-3">
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" role="switch" id="cos-auto-approve" />
+              <label class="form-check-label small" for="cos-auto-approve">Auto-approve actions</label>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="cos-chat-clear">
+              <i class="bi bi-eraser me-1"></i>Clear
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div id="cos-chat-log" class="d-flex flex-column gap-3 mb-3"
+            style="max-height: 60vh; min-height: 320px; overflow-y: auto;">
+            <div class="text-muted small" id="cos-chat-placeholder">
+              Select an agent above, then ask it to do something — for example
+              <em>"draft an email to myself titled COS test saying hello"</em>.
+            </div>
+          </div>
+          <div class="input-group">
+            <input type="text" class="form-control" id="cos-chat-input"
+              placeholder="Type a request..." disabled />
+            <button class="btn btn-primary" type="button" id="cos-chat-send" disabled>
+              <i class="bi bi-send me-1"></i>Send
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/cos/cos-agent-builder.js') }}"></script>
+<script src="{{ url_for('static', filename='js/cos/cos-planner-chat.js') }}"></script>
+{% endblock %}
